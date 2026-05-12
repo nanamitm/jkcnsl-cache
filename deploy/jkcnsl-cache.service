@@ -1,0 +1,15 @@
+[Unit]
+Description=jkcnsl cache server
+After=network.target
+
+[Service]
+Type=simple
+User=jkcnsl
+WorkingDirectory=/opt/jkcnsl-cache
+ExecStart=/opt/jkcnsl-cache/jkcnsl-cache
+Restart=always
+RestartSec=5
+Environment=ASPNETCORE_ENVIRONMENT=Production
+
+[Install]
+WantedBy=multi-user.target

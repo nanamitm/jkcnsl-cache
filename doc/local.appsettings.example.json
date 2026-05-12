@@ -1,0 +1,7 @@
+{
+  "CacheServer": {
+    "NhkProgramApi": {
+      "API_Key": "your-nhk-program-api-key"
+    }
+  }
+}

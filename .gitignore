@@ -1,0 +1,24 @@
+.dotnet-home/
+.claude/
+.vs/
+jkcnsl-cache/.vs/
+
+# Local secrets / machine-specific settings
+jkcnsl-cache/local/
+
+# Build outputs
+bin/
+obj/
+jkcnsl-cache/bin/
+jkcnsl-cache/obj/
+jkcnsl-cache/client/dist/
+jkcnsl-cache/client/node_modules/
+jkcnsl-cache/wwwroot/
+
+# Local run/test logs
+*.out.log
+*.err.log
+
+# Tool binaries
+tools/jkcnsl-ws-load/jkcnsl-ws-load
+tools/jkcnsl-ws-load/jkcnsl-ws-load.exe
