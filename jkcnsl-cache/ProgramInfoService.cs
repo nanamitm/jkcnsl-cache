@@ -23,9 +23,13 @@ public sealed class ProgramInfoService : BackgroundService
     private DateOnly? _loadedAtxBroadcastDate;
     private DateOnly? _loadedOujBroadcastDate;
     private DateTimeOffset _lastFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastRefreshFailureUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastNhkFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastNhkAttemptUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastAtxFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastAtxAttemptUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastOujFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastOujAttemptUtc = DateTimeOffset.MinValue;
     private bool _hasBroadcastSnapshot;
 
     private static readonly IReadOnlyDictionary<string, TVerBroadcasterInfo> JikkyoToTVer = new Dictionary<string, TVerBroadcasterInfo>
@@ -170,6 +174,8 @@ public sealed class ProgramInfoService : BackgroundService
     {
         var refreshInterval = TimeSpan.FromSeconds(Math.Max(60,
             _config.GetValue<int>("CacheServer:ProgramInfoUpdateIntervalSeconds", 1200)));
+        var failureRetryInterval = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:ProgramInfoFailureRetrySeconds", 1800)));
         var evaluationInterval = TimeSpan.FromSeconds(Math.Max(10,
             _config.GetValue<int>("CacheServer:ProgramInfoEvaluationIntervalSeconds", 60)));
 
@@ -182,12 +188,16 @@ public sealed class ProgramInfoService : BackgroundService
                 var hasLoaded = HasLoadedBroadcastDates(broadcastDate);
                 if (!hasLoaded || now - _lastFetchUtc >= refreshInterval)
                 {
-                    if (hasLoaded && await DelayIfEpgUpdateAvoidWindowAsync(now, stoppingToken))
+                    if (now - _lastRefreshFailureUtc >= failureRetryInterval)
                     {
-                        now = DateTimeOffset.UtcNow;
-                        broadcastDate = GetBroadcastDate(now);
+                        if (hasLoaded && await DelayIfEpgUpdateAvoidWindowAsync(now, stoppingToken))
+                        {
+                            now = DateTimeOffset.UtcNow;
+                            broadcastDate = GetBroadcastDate(now);
+                        }
+                        await RefreshEpgAsync(broadcastDate, stoppingToken);
+                        _lastRefreshFailureUtc = DateTimeOffset.MinValue;
                     }
-                    await RefreshEpgAsync(broadcastDate, stoppingToken);
                 }
 
                 if (EvaluateCurrentPrograms(now))
@@ -199,6 +209,7 @@ public sealed class ProgramInfoService : BackgroundService
             catch (OperationCanceledException) { break; }
             catch (Exception ex)
             {
+                _lastRefreshFailureUtc = DateTimeOffset.UtcNow;
                 _logger.LogWarning(ex, "[ProgramInfo] 番組情報更新に失敗しました");
                 MarkCurrentProgramsStale();
             }
@@ -220,13 +231,28 @@ public sealed class ProgramInfoService : BackgroundService
         var now = DateTimeOffset.UtcNow;
         var nhkRefreshInterval = TimeSpan.FromSeconds(Math.Max(3600,
             _config.GetValue<int>("CacheServer:NhkProgramApi:UpdateIntervalSeconds", 43200)));
+        var nhkFailureRetryInterval = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:NhkProgramApi:FailureRetrySeconds", 1800)));
 
         if (_loadedNhkBroadcastDate != broadcastDate || now - _lastNhkFetchUtc >= nhkRefreshInterval)
         {
-            if (await FetchNhkProgramsAsync(broadcastDate, newEpgPrograms, ct))
+            if (now - _lastNhkAttemptUtc >= nhkFailureRetryInterval)
             {
-                _loadedNhkBroadcastDate = broadcastDate;
-                _lastNhkFetchUtc = now;
+                _lastNhkAttemptUtc = now;
+                if (await FetchNhkProgramsAsync(broadcastDate, newEpgPrograms, ct))
+                {
+                    CopyMissingExistingNhkPrograms(broadcastDate, newEpgPrograms);
+                    _loadedNhkBroadcastDate = broadcastDate;
+                    _lastNhkFetchUtc = now;
+                }
+                else
+                {
+                    CopyExistingNhkPrograms(broadcastDate, newEpgPrograms);
+                }
+            }
+            else
+            {
+                CopyExistingNhkPrograms(broadcastDate, newEpgPrograms);
             }
         }
         else
@@ -236,13 +262,27 @@ public sealed class ProgramInfoService : BackgroundService
 
         var atxRefreshInterval = TimeSpan.FromSeconds(Math.Max(21600,
             _config.GetValue<int>("CacheServer:AtxProgram:UpdateIntervalSeconds", 86400)));
+        var atxFailureRetryInterval = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:AtxProgram:FailureRetrySeconds", 1800)));
         if (_config.GetValue<bool>("CacheServer:AtxProgram:Enabled", true) &&
             (_loadedAtxBroadcastDate != broadcastDate || now - _lastAtxFetchUtc >= atxRefreshInterval))
         {
-            if (await FetchAtxProgramsAsync(broadcastDate, newEpgPrograms, ct))
+            if (now - _lastAtxAttemptUtc >= atxFailureRetryInterval)
             {
-                _loadedAtxBroadcastDate = broadcastDate;
-                _lastAtxFetchUtc = now;
+                _lastAtxAttemptUtc = now;
+                if (await FetchAtxProgramsAsync(broadcastDate, newEpgPrograms, ct))
+                {
+                    _loadedAtxBroadcastDate = broadcastDate;
+                    _lastAtxFetchUtc = now;
+                }
+                else
+                {
+                    CopyExistingAtxPrograms(broadcastDate, newEpgPrograms);
+                }
+            }
+            else
+            {
+                CopyExistingAtxPrograms(broadcastDate, newEpgPrograms);
             }
         }
         else
@@ -252,13 +292,27 @@ public sealed class ProgramInfoService : BackgroundService
 
         var oujRefreshInterval = TimeSpan.FromSeconds(Math.Max(3600,
             _config.GetValue<int>("CacheServer:OujProgram:UpdateIntervalSeconds", 43200)));
+        var oujFailureRetryInterval = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:OujProgram:FailureRetrySeconds", 1800)));
         if (_config.GetValue<bool>("CacheServer:OujProgram:Enabled", true) &&
             (_loadedOujBroadcastDate != broadcastDate || now - _lastOujFetchUtc >= oujRefreshInterval))
         {
-            if (await FetchOujProgramsAsync(broadcastDate, newEpgPrograms, ct))
+            if (now - _lastOujAttemptUtc >= oujFailureRetryInterval)
             {
-                _loadedOujBroadcastDate = broadcastDate;
-                _lastOujFetchUtc = now;
+                _lastOujAttemptUtc = now;
+                if (await FetchOujProgramsAsync(broadcastDate, newEpgPrograms, ct))
+                {
+                    _loadedOujBroadcastDate = broadcastDate;
+                    _lastOujFetchUtc = now;
+                }
+                else
+                {
+                    CopyExistingOujPrograms(broadcastDate, newEpgPrograms);
+                }
+            }
+            else
+            {
+                CopyExistingOujPrograms(broadcastDate, newEpgPrograms);
             }
         }
         else
@@ -411,6 +465,21 @@ public sealed class ProgramInfoService : BackgroundService
         }
     }
 
+    private void CopyMissingExistingNhkPrograms(DateOnly broadcastDate, Dictionary<string, List<EpgProgram>> epgPrograms)
+    {
+        if (_loadedNhkBroadcastDate != broadcastDate)
+            return;
+
+        lock (_lock)
+        {
+            foreach (var jkId in JikkyoToNhkService.Keys)
+            {
+                if (!epgPrograms.ContainsKey(jkId) && _epgPrograms.TryGetValue(jkId, out var programs))
+                    epgPrograms[jkId] = programs;
+            }
+        }
+    }
+
     private void CopyExistingAtxPrograms(DateOnly broadcastDate, Dictionary<string, List<EpgProgram>> epgPrograms)
     {
         if (_loadedAtxBroadcastDate != broadcastDate)
@@ -439,6 +508,27 @@ public sealed class ProgramInfoService : BackgroundService
         Dictionary<string, List<EpgProgram>> epgPrograms, CancellationToken ct)
     {
         var url = _config["CacheServer:AtxProgram:Url"] ?? "https://www.at-x.com/program";
+        var apiUrl = _config["CacheServer:AtxProgram:ApiUrl"] ?? "https://api.atx.01core.app/api/schedules?id";
+        try
+        {
+            _logger.LogDebug("[ProgramInfo] AT-X 番組表APIを取得します: url={Url}", apiUrl);
+            var json = await _http.GetStringAsync(apiUrl, ct);
+            var apiPrograms = ParseAtxApiPrograms(json);
+            if (apiPrograms.Count > 0)
+            {
+                epgPrograms["jk333"] = apiPrograms;
+                _logger.LogInformation("[ProgramInfo] AT-X 番組表を更新しました: source=api count={Count}",
+                    apiPrograms.Count);
+                return true;
+            }
+            _logger.LogWarning("[ProgramInfo] AT-X 番組表APIの解析結果が0件です: url={Url}", apiUrl);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ProgramInfo] AT-X 番組表API取得に失敗しました: url={Url}", apiUrl);
+        }
+
         try
         {
             _logger.LogDebug("[ProgramInfo] AT-X 番組表を取得します: url={Url}", url);
@@ -451,7 +541,7 @@ public sealed class ProgramInfoService : BackgroundService
             }
 
             epgPrograms["jk333"] = programs;
-            _logger.LogInformation("[ProgramInfo] AT-X 番組表を更新しました: count={Count}", programs.Count);
+            _logger.LogInformation("[ProgramInfo] AT-X 番組表を更新しました: source=html count={Count}", programs.Count);
             return true;
         }
         catch (OperationCanceledException) { throw; }
@@ -473,6 +563,7 @@ public sealed class ProgramInfoService : BackgroundService
             return false;
         }
 
+        var successCount = 0;
         foreach (var (jkId, service) in JikkyoToNhkService)
         {
             try
@@ -516,6 +607,7 @@ public sealed class ProgramInfoService : BackgroundService
                 }
 
                 epgPrograms[jkId] = parsedPrograms;
+                successCount++;
                 _logger.LogInformation("[ProgramInfo] NHK EPG を更新しました: date={Date} area={Area} service={Service} channel={Channel} count={Count} genres={GenreCount}",
                     broadcastDate, _nhkArea, service, jkId, parsedPrograms.Count,
                     parsedPrograms.Count(program => program.GenreCode != null));
@@ -528,7 +620,7 @@ public sealed class ProgramInfoService : BackgroundService
             }
         }
 
-        return true;
+        return successCount > 0;
     }
 
     private async Task<bool> FetchOujProgramsAsync(DateOnly broadcastDate,
@@ -713,6 +805,77 @@ public sealed class ProgramInfoService : BackgroundService
             .ToList();
     }
 
+    private List<EpgProgram> ParseAtxApiPrograms(string json)
+    {
+        var startsByDate = new Dictionary<DateOnly, List<AtxProgramStart>>();
+        using var doc = JsonDocument.Parse(json);
+        if (!doc.RootElement.TryGetProperty("time_table", out var timeTable) ||
+            timeTable.ValueKind != JsonValueKind.Array)
+            return new List<EpgProgram>();
+
+        foreach (var row in timeTable.EnumerateArray())
+        {
+            var timeText = GetStringProperty(row, "time");
+            if (!TryParseAtxTime(timeText, out var hour, out var minute))
+                continue;
+
+            if (!row.TryGetProperty("programs", out var programs) ||
+                programs.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var program in programs.EnumerateArray())
+            {
+                try
+                {
+                    var dateText = GetStringProperty(program, "date");
+                    if (!DateOnly.TryParse(dateText, out var date))
+                        continue;
+
+                    var title = FormatAtxApiTitle(
+                        GetStringProperty(program, "program_title"),
+                        GetStringProperty(program, "episode"),
+                        program.TryGetProperty("type", out var typeElement) && typeElement.TryGetInt32(out var type)
+                            ? type
+                            : 0);
+                    if (string.IsNullOrWhiteSpace(title))
+                        continue;
+
+                    if (!startsByDate.TryGetValue(date, out var list))
+                    {
+                        list = new List<AtxProgramStart>();
+                        startsByDate[date] = list;
+                    }
+                    list.Add(new AtxProgramStart(CreateAtxStartTime(date, hour, minute), title));
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "[ProgramInfo] AT-X API 番組要素の解析をスキップしました");
+                }
+            }
+        }
+
+        var result = new List<EpgProgram>();
+        foreach (var (date, starts) in startsByDate)
+        {
+            var ordered = starts
+                .GroupBy(program => (program.Title, program.StartAt))
+                .Select(group => group.First())
+                .OrderBy(program => program.StartAt)
+                .ToArray();
+            for (var i = 0; i < ordered.Length; i++)
+            {
+                var startAt = ordered[i].StartAt;
+                var endAt = i + 1 < ordered.Length
+                    ? ordered[i + 1].StartAt
+                    : CreateAtxStartTime(date, 30, 0);
+                if (endAt > startAt)
+                    result.Add(new EpgProgram(ordered[i].Title, startAt, endAt, "atx", null, null));
+            }
+        }
+
+        return result.OrderBy(program => program.StartAt).ToList();
+    }
+
     private List<EpgProgram> ParseAtxPrograms(string html)
     {
         var weekStart = ParseAtxWeekStart(html);
@@ -824,6 +987,21 @@ public sealed class ProgramInfoService : BackgroundService
         if (HasAtxCellClass(cellAttrs, "bgPink")) prefix += "[新]";
         if (HasAtxCellClass(cellAttrs, "bgBlue")) prefix += "[終]";
         return $"{prefix}{title}";
+    }
+
+    private static string FormatAtxApiTitle(string title, string episode, int broadcastType)
+    {
+        var text = string.IsNullOrWhiteSpace(episode)
+            ? title
+            : $"{title} {episode}";
+        text = Regex.Replace(NormalizeTitle(text), @"\s*▲\s*$", "[字]");
+        var prefix = broadcastType switch
+        {
+            1 => "[新]",
+            3 => "[終]",
+            _ => "",
+        };
+        return $"{prefix}{text}";
     }
 
     private static bool HasAtxCellClass(string attrs, string className)

@@ -97,6 +97,9 @@ deploy/ フォルダのファイルを使ってセットアップできます。
     "WatchKeepIntervalSeconds": 30,
     "WatchIdleTimeoutSeconds": 90,
     "BroadcastTimeZone": "Asia/Tokyo",
+    "ProgramInfoUpdateIntervalSeconds": 3600,
+    "ProgramInfoFailureRetrySeconds": 1800,
+    "ProgramInfoEvaluationIntervalSeconds": 60,
     "LocalStream": {
       "HistoryLimit": 20,
       "HistorySeconds": 3,
@@ -111,17 +114,21 @@ deploy/ フォルダのファイルを使ってセットアップできます。
     "NhkProgramApi": {
       "API_Key": "",
       "Area": "130",
-      "UpdateIntervalSeconds": 43200
+      "UpdateIntervalSeconds": 43200,
+      "FailureRetrySeconds": 1800
     },
     "AtxProgram": {
       "Enabled": true,
       "Url": "https://www.at-x.com/program",
-      "UpdateIntervalSeconds": 86400
+      "ApiUrl": "https://api.atx.01core.app/api/schedules?id",
+      "UpdateIntervalSeconds": 86400,
+      "FailureRetrySeconds": 1800
     },
     "OujProgram": {
       "Enabled": true,
       "Url": "https://bangumi.ouj.ac.jp/v4/bslife/oujapi.php",
-      "UpdateIntervalSeconds": 43200
+      "UpdateIntervalSeconds": 43200,
+      "FailureRetrySeconds": 1800
     },
     "ExtraChannels": [],
     "ChannelOverrides": {},
@@ -152,6 +159,16 @@ WatchKeepIntervalSeconds / WatchIdleTimeoutSeconds: /watch 接続の生存確認
   サーバーは seat.keepIntervalSec として WatchKeepIntervalSeconds を返し、クライアントは
   keepSeat を定期送信します。WatchIdleTimeoutSeconds を超えて無通信の場合は切断します。
 
+ProgramInfoUpdateIntervalSeconds: TVer を含む番組表全体の更新間隔です。
+  省略時は 1200 秒です。設定ミスによる過剰アクセスを防ぐため、60 秒未満を指定しても最低 60 秒として扱います。
+  通常運用では 3600 秒以上を推奨します。
+
+ProgramInfoFailureRetrySeconds: TVer 取得失敗などで番組表全体の更新に失敗した場合の再試行間隔です。
+  省略時は 1800 秒です。設定ミスによる過剰アクセスを防ぐため、300 秒未満を指定しても最低 300 秒として扱います。
+
+ProgramInfoEvaluationIntervalSeconds: 取得済み番組表から現在番組を再評価する間隔です。
+  外部サイトへのアクセスは行いません。
+
 LocalStream: "localstream:" と設定したチャンネルで使う内蔵コメントストリームです。
   NicoJK / jkcnsl からは通常の避難所と同じように /watch/{jkID} / /comment/{jkID} へ接続します。
   ログイン機能はなく、投稿は匿名コメントとして扱います。
@@ -173,6 +190,8 @@ NhkProgramApi: NHK BSプレミアム4K（jk103）と NHK BS8K（jk104）の番�
   Area は地域コードです。東京の場合は "130" を指定します。
   UpdateIntervalSeconds は NHK 番組APIへの取得間隔です。省略時は 43200 秒（12時間）です。
   設定ミスによる過剰アクセスを防ぐため、3600 秒未満を指定しても最低 3600 秒として扱います。
+  FailureRetrySeconds は取得失敗時の再試行間隔です。省略時は 1800 秒（30分）です。
+  一部サービスだけ取得に失敗した場合でも、同じ放送日の既存キャッシュがあれば保持します。
   jk103 と jk104 を取得するため、1回の更新で NHK 番組APIを2回呼び出します。
   APIキーを appsettings.json に保存したくない場合は、環境変数
   CacheServer__NhkProgramApi__API_Key でも設定できます。
@@ -194,14 +213,18 @@ NhkProgramApi: NHK BSプレミアム4K（jk103）と NHK BS8K（jk104）の番�
   「ＮＨＫ番組の情報提供:ＮＨＫ」のクレジットを表示してください。
 
 AtxProgram: AT-X（jk333）の番組情報取得に使います。
-  Enabled が true の場合、Url の AT-X 公式週間番組表をスクレイピングし、jk333 の番組タイトルとして使います。
+  Enabled が true の場合、ApiUrl の AT-X 公式番組表APIを取得し、jk333 の番組タイトルとして使います。
+  ApiUrl で0件または取得失敗になった場合は、互換用に Url の公式週間番組表HTML解析へフォールバックします。
   UpdateIntervalSeconds は取得間隔です。省略時は 86400 秒（24時間）です。
   設定ミスによる過剰アクセスを防ぐため、21600 秒未満を指定しても最低 21600 秒として扱います。
+  FailureRetrySeconds は取得失敗時の再試行間隔です。省略時は 1800 秒（30分）です。
+  取得に失敗した場合でも、同じ放送日の既存キャッシュがあれば保持します。
   取得済み番組表は内部でキャッシュし、現在番組の切り替えは ProgramInfoEvaluationIntervalSeconds 間隔で評価します。
 
 OujProgram: 放送大学ラジオ（jk531）の番組情報取得に使います。
   Enabled が true の場合、Url の放送大学公式 番組情報取得APIから BS531 の番組表を取得します。
   UpdateIntervalSeconds は取得間隔です。省略時は 43200 秒（12時間）です。
+  FailureRetrySeconds は取得失敗時の再試行間隔です。省略時は 1800 秒（30分）です。
   放送大学APIはXMLを返すため、内部でXMLを解析します。ジャンルは BS531 固定で「その他」(0xF) として扱います。
 
 ExtraChannels: ChannelList.cs にないチャンネルを appsettings.json だけで追加します。
