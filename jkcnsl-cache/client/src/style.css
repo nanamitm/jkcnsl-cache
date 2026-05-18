@@ -871,6 +871,29 @@ body {
 }
 #settings-btn:hover { color: var(--text-strong); background: var(--stage-panel-bg); }
 
+#connection-action-btn {
+  position: absolute;
+  top: 8px;
+  right: 52px;
+  height: 36px;
+  padding: 0 12px;
+  background: var(--stage-button-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 12px;
+  z-index: 10;
+}
+#connection-action-btn:hover {
+  color: var(--text-strong);
+  background: var(--stage-panel-bg);
+}
+#connection-action-btn.is-disconnected {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+
 #settings-panel {
   position: absolute;
   top: 50px;

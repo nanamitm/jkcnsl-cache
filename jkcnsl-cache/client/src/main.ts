@@ -89,6 +89,8 @@ let channelListPointerInside = false
 type WsState = 'idle' | 'connecting' | 'connected' | 'disconnected'
 let wsState: WsState = 'idle'
 let reconnectAt = 0
+let manualDisconnected = false
+let connectionEpoch = 0
 let watchWs: WebSocket | null = null
 let watchKeepSeatTimer: number | null = null
 // text → 投稿時刻(ms)。コメントが届いた時点で照合し自分のものか判定
@@ -384,6 +386,7 @@ app.innerHTML = `
       <div id="overlay-area"></div>
       <div id="program-banner"></div>
       <div id="stage-info"></div>
+      <button id="connection-action-btn" type="button" hidden>切断</button>
       <div id="settings-btn" title="設定">⚙</div>
       <div id="settings-panel" hidden>
         <div class="settings-row">
@@ -515,6 +518,7 @@ const scheduleTab  = document.getElementById('schedule-tab')!
 const overlayArea = document.getElementById('overlay-area')!
 const programBanner = document.getElementById('program-banner')!
 const stageInfo   = document.getElementById('stage-info')!
+const connectionActionBtn = document.getElementById('connection-action-btn') as HTMLButtonElement
 const commentList = document.getElementById('comment-list')!
 const statusBar   = document.getElementById('status-bar')!
 const settingsBtn = document.getElementById('settings-btn')!
@@ -581,6 +585,12 @@ chListEl.addEventListener('pointerleave', () => {
 // ─── Settings ─────────────────────────────────────────────────────────────────
 settingsBtn.addEventListener('click', () => {
   settingsPanel.hidden = !settingsPanel.hidden
+})
+connectionActionBtn.addEventListener('click', () => {
+  if (manualDisconnected)
+    reconnectSelectedChannel()
+  else
+    disconnectSelectedChannel()
 })
 sidebarSettingsBtn.addEventListener('click', () => {
   sidebarSettingsPanel.hidden = !sidebarSettingsPanel.hidden
@@ -1536,7 +1546,13 @@ window.addEventListener('mouseup', () => {
 // ─── Channel / WebSocket ───────────────────────────────────────────────────────
 function selectChannel(video: string) {
   setViewMode('watch')
-  if (selectedChannel === video) return
+  if (selectedChannel === video) {
+    if (manualDisconnected)
+      reconnectSelectedChannel()
+    return
+  }
+  manualDisconnected = false
+  connectionEpoch++
   selectedChannel = video
   commentLogQueue = []
   commentLogFlushScheduled = false
@@ -1558,6 +1574,7 @@ function selectChannel(video: string) {
   wsState = 'connecting'
   reconnectAt = 0
   updateStageInfo()
+  updateConnectionAction()
   updateProgramBanner()
   updatePostArea()
   renderChannelList(true)
@@ -1566,38 +1583,48 @@ function selectChannel(video: string) {
 }
 
 function connectWs(video: string) {
+  manualDisconnected = false
+  const epoch = connectionEpoch
   wsState = 'connecting'
   updateStageInfo()
+  updateConnectionAction()
   const source = findSourceByKey(video)
   ws = new WebSocket(toWebSocketUrl(source?.source.commentUrl ?? `/comment/${video}`), 'msg.nicovideo.jp#json')
   ws.onopen = () => {
+    if (selectedChannel !== video || epoch !== connectionEpoch) return
     wsState = 'connected'
     reconnectAt = 0
     updateStageInfo()
+    updateConnectionAction()
     setStatus(`接続中: ${video}`)
   }
   ws.onmessage = (e) => {
+    if (selectedChannel !== video || epoch !== connectionEpoch) return
     try {
       const obj = JSON.parse(e.data)
       if (obj.chat) handleChat(obj.chat as Chat)
     } catch { /* ignore */ }
   }
   ws.onclose = (e) => {
-    if (selectedChannel !== video) return
+    if (selectedChannel !== video || epoch !== connectionEpoch) return
     wsState = 'disconnected'
-    reconnectAt = Date.now() + 5000
+    reconnectAt = manualDisconnected ? 0 : Date.now() + 5000
     updateStageInfo()
-    setStatus(`切断 (${e.code}) — 5秒後に再接続`)
-    setTimeout(() => { if (selectedChannel === video) connectWs(video) }, 5000)
+    updateConnectionAction()
+    setStatus(manualDisconnected ? '切断しました' : `切断 (${e.code}) — 5秒後に再接続`)
+    if (!manualDisconnected)
+      setTimeout(() => { if (selectedChannel === video && !manualDisconnected) connectWs(video) }, 5000)
   }
   ws.onerror = () => {
     wsState = 'disconnected'
     updateStageInfo()
+    updateConnectionAction()
     setStatus('接続エラー')
   }
 }
 
 function connectWatchWs(video: string) {
+  const epoch = connectionEpoch
   watchWs?.close()
   watchWs = null
   clearWatchKeepSeatTimer()
@@ -1608,6 +1635,7 @@ function connectWatchWs(video: string) {
   const source = findSourceByKey(video)
   watchWs = new WebSocket(toWebSocketUrl(source?.source.watchUrl ?? `/watch/${video}`))
   watchWs.onopen = () => {
+    if (selectedChannel !== video || epoch !== connectionEpoch) return
     const data: { room: { commentable: boolean }; cookie?: string } = { room: { commentable: true } }
     if (userCookie) data.cookie = userCookie
     watchWs!.send(JSON.stringify({
@@ -1615,6 +1643,7 @@ function connectWatchWs(video: string) {
     }))
   }
   watchWs.onmessage = (e) => {
+    if (selectedChannel !== video || epoch !== connectionEpoch) return
     try {
       const obj = JSON.parse(e.data)
       if (obj.type === 'seat')
@@ -1628,9 +1657,49 @@ function connectWatchWs(video: string) {
   }
   watchWs.onclose = () => {
     clearWatchKeepSeatTimer()
-    if (selectedChannel === video)
-      setTimeout(() => { if (selectedChannel === video) connectWatchWs(video) }, 10000)
+    if (selectedChannel === video && epoch === connectionEpoch && !manualDisconnected)
+      setTimeout(() => { if (selectedChannel === video && epoch === connectionEpoch) connectWatchWs(video) }, 10000)
   }
+}
+
+function disconnectSelectedChannel() {
+  if (!selectedChannel) return
+  manualDisconnected = true
+  connectionEpoch++
+  reconnectAt = 0
+  clearWatchKeepSeatTimer()
+  ws?.close()
+  watchWs?.close()
+  ws = null
+  watchWs = null
+  vposBaseTime = null
+  pendingOwnTexts.clear()
+  wsState = 'disconnected'
+  updateStageInfo()
+  updateConnectionAction()
+  updatePostArea()
+  setStatus('切断しました')
+}
+
+function reconnectSelectedChannel() {
+  if (!selectedChannel) return
+  const video = selectedChannel
+  manualDisconnected = false
+  connectionEpoch++
+  reconnectAt = 0
+  ws?.close()
+  watchWs?.close()
+  ws = null
+  watchWs = null
+  clearWatchKeepSeatTimer()
+  vposBaseTime = null
+  pendingOwnTexts.clear()
+  wsState = 'connecting'
+  updateStageInfo()
+  updateConnectionAction()
+  updatePostArea()
+  connectWs(video)
+  connectWatchWs(video)
 }
 
 function clearWatchKeepSeatTimer() {
@@ -1716,7 +1785,7 @@ function createCommentLogEntry(chat: Chat) {
 
 // ─── Post comment ───────────────────────────────────────────────────────────
 function updatePostArea() {
-  postArea.hidden = !(selectedChannel && (userCookie || isSelectedAccountlessPostSource()))
+  postArea.hidden = !(selectedChannel && !manualDisconnected && (userCookie || isSelectedAccountlessPostSource()))
 }
 
 function toWebSocketUrl(pathOrUrl: string) {
@@ -2020,6 +2089,7 @@ function updateStageInfo() {
   if (!selectedChannel) {
     stageInfo.className = ''
     stageInfo.innerHTML = '<div class="si-hint">← チャンネルを選択</div>'
+    updateConnectionAction()
     return
   }
 
@@ -2031,6 +2101,7 @@ function updateStageInfo() {
     if (!(source?.sourceType === 'unofficial' && (source.isReserved || source.status === 'retryWaiting'))) {
       stageInfo.className = 'si-hidden'
       stageInfo.innerHTML = ''
+      updateConnectionAction()
       return
     }
   }
@@ -2051,6 +2122,8 @@ function updateStageInfo() {
       : '<div class="si-status si-connecting">接続済み</div>'
   } else if (wsState === 'connecting') {
     statusHtml = '<div class="si-status si-connecting">接続中…</div>'
+  } else if (manualDisconnected) {
+    statusHtml = '<div class="si-status si-disconnected">切断中</div>'
   } else {
     const remain = Math.max(0, Math.ceil((reconnectAt - Date.now()) / 1000))
     statusHtml = remain > 0
@@ -2073,9 +2146,18 @@ function updateStageInfo() {
     scheduledLine.append(' ')
     appendNicovideoLink(scheduledLine, source!.currentTarget!)
   }
+  updateConnectionAction()
 }
 
 function setStatus(msg: string) { statusBar.textContent = msg }
+
+function updateConnectionAction() {
+  connectionActionBtn.hidden = !selectedChannel
+  if (!selectedChannel) return
+  connectionActionBtn.textContent = manualDisconnected ? '再接続' : '切断'
+  connectionActionBtn.title = manualDisconnected ? '選択中のチャンネルへ再接続' : '選択中のチャンネルを切断'
+  connectionActionBtn.classList.toggle('is-disconnected', manualDisconnected)
+}
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 applyChannelProgramGenreColorSetting()
