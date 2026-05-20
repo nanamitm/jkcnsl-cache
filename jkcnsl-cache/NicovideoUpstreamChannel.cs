@@ -13,6 +13,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
 {
     private readonly string _lvId;
     private readonly TimeSpan _noStreamCheckInterval;
+    private readonly int _fallbackMaxCommentLength;
     private readonly NicovideoSearchService? _searchService;
     private volatile string? _currentLvId;
     private volatile string? _scheduledLvId;
@@ -31,24 +32,28 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         !string.IsNullOrEmpty(_lvId) ? _lvId : null;
     public override bool IsScheduled => _isScheduled;
     public override DateTimeOffset? ScheduledStartUtc => _scheduledStartUtc;
-    public override string Status => _isRetryWaiting ? "retryWaiting" : base.Status;
-    public override string? StatusText => _isRetryWaiting ? "配信情報取得失敗" : null;
-
-    // 匿名接続のため投稿不可（per-client 認証は未実装）
-    public override Task<ReadOnlyMemory<byte>> PostCommentAsync(ReadOnlyMemory<byte> json, CancellationToken ct)
-    {
-        _logger.LogWarning("[{Channel}] コメント投稿は匿名接続では対応していません（要認証）", _channel);
-        return Task.FromResult<ReadOnlyMemory<byte>>(
-            "{\"type\":\"error\",\"data\":{\"code\":\"COMMENT_POST_NOT_ALLOWED\"}}"u8.ToArray());
-    }
-
     public override DateTimeOffset? VposBaseTime
     {
         get
         {
+            if (IsLocalFallbackActive)
+                return base.VposBaseTime;
             var t = Interlocked.Read(ref _upstreamVposBaseTicks);
             return t > 0 ? new DateTimeOffset(t, TimeSpan.Zero) : null;
         }
+    }
+    public override string Status => IsLocalFallbackActive ? "fallbackLocal" : _isRetryWaiting ? "retryWaiting" : base.Status;
+    public override string? StatusText => IsLocalFallbackActive ? "ローカル待避中" : _isRetryWaiting ? "配信情報取得失敗" : null;
+
+    // 匿名接続のため投稿不可（per-client 認証は未実装）
+    public override Task<ReadOnlyMemory<byte>> PostCommentAsync(ReadOnlyMemory<byte> json, CancellationToken ct)
+    {
+        if (IsLocalFallbackActive)
+            return PostLocalFallbackCommentAsync(json, null, _fallbackMaxCommentLength, ct);
+
+        _logger.LogWarning("[{Channel}] コメント投稿は匿名接続では対応していません（要認証）", _channel);
+        return Task.FromResult<ReadOnlyMemory<byte>>(
+            "{\"type\":\"error\",\"data\":{\"code\":\"COMMENT_POST_NOT_ALLOWED\"}}"u8.ToArray());
     }
 
     private readonly HttpClient _pageClient = new(new HttpClientHandler
@@ -65,13 +70,14 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
 
     private const int MaxChunkSize = 1048576;
 
-    public NicovideoUpstreamChannel(string channel, string lvId, ILogger logger, TimeSpan noStreamCheckInterval,
+    public NicovideoUpstreamChannel(string channel, string lvId, IConfiguration config, ILogger logger, TimeSpan noStreamCheckInterval,
         MetricsService metrics, NicovideoSearchService? searchService = null)
         : base(channel, logger, metrics)
     {
         _lvId = lvId;
         _noStreamCheckInterval = noStreamCheckInterval;
         _searchService = searchService;
+        _fallbackMaxCommentLength = Math.Max(1, config.GetValue<int>("CacheServer:LocalStream:MaxCommentLength", 75));
         _pageClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
         _pageClient.DefaultRequestHeaders.Add("Accept", "*/*");
         _streamClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
@@ -91,6 +97,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         // 2. 非公式チャンネル: 検索サービスから次のバッチ結果を受け取る
         if (webSocketUrl == null && _searchService != null)
         {
+            SetLocalFallbackActive(true);
             var result = await _searchService.WaitForNextResultAsync(_channel, _failedNonOfficialLvId, ct);
             if (result == null)
             {
@@ -169,17 +176,24 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     _scheduledStartUtc = null;
                     _isScheduled = false;
                     _isRetryWaiting = true;
+                    SetLocalFallbackActive(true);
                     _logger.LogWarning("[{Channel}] 非公式配信の短時間再検索に失敗。次のバッチまで待機します", _channel);
                     return;
                 }
             }
         }
 
-        // 3. 配信なし（公式チャンネルのみ到達）→ 外側の通常バックオフで再検索
+        // 3. 配信なし（公式チャンネルのみ到達）
+        //    メンテナンス等で watch ページ取得に失敗した場合、通常バックオフだと最大5分で再試行する。
+        //    外部サイトへの過剰アクセスを避けるため、配信なし確認と同じ間隔まで待機する。
         if (webSocketUrl == null)
         {
             _isRetryWaiting = true;
-            throw new TemporaryStreamUnavailableException("配信情報を取得できませんでした");
+            SetLocalFallbackActive(true);
+            _logger.LogWarning("[{Channel}] 配信情報を取得できません。{Minutes}分後に再確認します",
+                _channel, Math.Round(_noStreamCheckInterval.TotalMinutes, 1));
+            await Task.Delay(_noStreamCheckInterval, ct);
+            return;
         }
 
         // 視聴セッション WebSocket 接続
@@ -196,6 +210,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         _scheduledStartUtc = null;
         _isScheduled = false;
         _isRetryWaiting = false;
+        SetLocalFallbackActive(false);
         _logger.LogInformation("[{Channel}] nicovideo WebSocketへ接続: {Url}", _channel, webSocketUrl);
         await watchWs.ConnectAsync(new Uri(webSocketUrl), ct);
         await SendTextAsync(watchWs, """{"type":"startWatching","data":{"reconnect":false}}""", ct);
@@ -383,6 +398,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
             _scheduledLvId = null;
             _scheduledStartUtc = null;
             _isScheduled = false;
+            if (!_isRetryWaiting) SetLocalFallbackActive(true);
             if (!_isRetryWaiting) _isRetryWaiting = false;
             prefetchStream?.Close();
             segmentStream?.Close();
@@ -581,8 +597,6 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
     }
 
     private sealed class EntryStream400Exception : Exception { }
-    private sealed class TemporaryStreamUnavailableException(string message) : Exception(message);
-
     private static async Task<MemoryStream?> ReadProtoBufChunkAsync(Stream s, MemoryStream ms, byte[] buf, CancellationToken ct)
     {
         ms.SetLength(0);

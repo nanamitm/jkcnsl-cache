@@ -118,7 +118,7 @@ public class ChannelManager
             catch (OperationCanceledException) { return; }
 
             // seat → serverTime → room の順に応答
-            if (isLocalStream)
+            if (isLocalStream || upstream.IsLocalFallbackActive)
                 commentable = true;
 
             _logger.LogDebug("[{Ch}] watch接続 commentable={C} vposBase={V}",
@@ -153,7 +153,10 @@ public class ChannelManager
                     if (msgType == "postComment")
                     {
                         _metrics.RecordPostAttempt();
-                        if (isLocalStream && DateTimeOffset.UtcNow - lastLocalPostUtc < localPostInterval)
+                        var isLocalPostTarget = isLocalStream || upstream.IsLocalFallbackActive;
+                        if (isLocalPostTarget)
+                            commentable = true;
+                        if (isLocalPostTarget && DateTimeOffset.UtcNow - lastLocalPostUtc < localPostInterval)
                         {
                             await ws.SendAsync(
                                 "{\"type\":\"error\",\"data\":{\"code\":\"POST_TOO_FAST\"}}"u8.ToArray(),
@@ -171,7 +174,7 @@ public class ChannelManager
 
                         ReadOnlyMemory<byte> response;
                         var watchTarget = upstream.WatchTarget;
-                        if (!string.IsNullOrEmpty(clientCookie) && !string.IsNullOrEmpty(watchTarget))
+                        if (!isLocalPostTarget && !string.IsNullOrEmpty(clientCookie) && !string.IsNullOrEmpty(watchTarget))
                         {
                             // per-client NicoNico セッション経由で投稿
                             _logger.LogDebug("[{Ch}] per-client投稿: target={T}", channel, watchTarget);
@@ -181,12 +184,12 @@ public class ChannelManager
                         else
                         {
                             // 共有 upstream セッション経由で投稿（NX-Jikkyo 等）
-                            var postJson = isLocalStream
+                            var postJson = isLocalPostTarget
                                 ? AddLocalUserId(buf.AsMemory(0, result.Count), localUserId)
                                 : buf.AsMemory(0, result.Count);
                             response = await upstream.PostCommentAsync(postJson, ct);
                         }
-                        if (isLocalStream)
+                        if (isLocalPostTarget)
                             lastLocalPostUtc = DateTimeOffset.UtcNow;
 
                         _metrics.RecordPostResult(ParsePostResultCode(response));
@@ -370,13 +373,13 @@ public class ChannelManager
             if (upstreamValue.StartsWith("nicovideo:", StringComparison.Ordinal))
             {
                 var lvId = upstreamValue["nicovideo:".Length..];
-                return new NicovideoUpstreamChannel(channel, lvId,
+                return new NicovideoUpstreamChannel(channel, lvId, _config,
                     _loggerFactory.CreateLogger<NicovideoUpstreamChannel>(),
                     TimeSpan.FromMinutes(_config.GetValue<int>("CacheServer:NoStreamCheckIntervalMinutes", 30)),
                     _metrics,
                     string.IsNullOrEmpty(lvId) ? _searchService : null);
             }
-            return new UpstreamChannel(channel, upstreamValue,
+            return new UpstreamChannel(channel, upstreamValue, _config,
                 _loggerFactory.CreateLogger<UpstreamChannel>(),
                 _metrics);
         });

@@ -36,6 +36,7 @@ internal static class StatusPage
         .sub-on        { color: #81c784; }
         .sub-off       { color: #555; }
         .sub-scheduled { color: #ffb74d; }
+        .sub-fallback  { color: #ffd54f; }
         h2 { font-size: 0.9rem; color: #7eb8f7; margin: 16px 0 4px; }
         #log { height: 220px; overflow-y: scroll; background: #0d0d1e;
                border: 1px solid #2a2a4a; padding: 6px 8px; font-size: 0.78rem; }
@@ -147,9 +148,13 @@ internal static class StatusPage
           return esc(t);
         }
         function sourceHtml(source) {
-          const cls = source.running ? 'sub-on' : source.isReserved ? 'sub-scheduled' : 'sub-off';
-          const dot = source.running ? '●' : source.isReserved ? '◇' : '○';
+          const fallback = source.status === 'fallbackLocal';
+          const cls = fallback ? 'sub-fallback' : source.running ? 'sub-on' : source.isReserved ? 'sub-scheduled' : 'sub-off';
+          const dot = fallback ? '●' : source.running ? '●' : source.isReserved ? '◇' : '○';
           const label = `<span class="${sourceTypeClass(source.sourceType)}">${esc(source.label)}</span>`;
+          let status = fallback ? ' ローカル待避中'
+            : source.statusText ? ' ' + esc(source.statusText)
+            : '';
           const target = source.currentTarget ? ' ' + fmtTarget(source.currentTarget) : '';
           if (source.isReserved) {
             let timeStr = '時刻不明';
@@ -161,9 +166,10 @@ internal static class StatusPage
               const mn = String(jst.getUTCMinutes()).padStart(2, '0');
               timeStr = `${mm}/${dd} ${hh}:${mn}`;
             }
-            return `<span class="sub ${cls}">${dot} ${label}${target} ${timeStr}開始予定</span>`;
+            if (fallback) status += ` ${timeStr}開始予定`;
+            return `<span class="sub ${cls}">${dot} ${label}${status}${target}${fallback ? '' : ' ' + timeStr + '開始予定'}</span>`;
           }
-          return `<span class="sub ${cls}">${dot} ${label}${target}</span>`;
+          return `<span class="sub ${cls}">${dot} ${label}${status}${target}</span>`;
         }
         function sourcesHtml(sources) {
           const configured = Array.isArray(sources) ? sources.filter(s => s.configured) : [];

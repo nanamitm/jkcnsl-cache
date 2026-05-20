@@ -76,7 +76,9 @@ public class NicovideoSearchService
     }
 
     // NicovideoUpstreamChannel から呼ばれる：次の検索バッチ結果が来るまでブロック
-    // スリープ中にバッチを逃した場合は直近キャッシュを即座に返す
+    // スリープ中にバッチを逃した場合は直近キャッシュを即座に返す。
+    // ただし「配信なし(null)」は即返ししない。チャンネル側が短周期で再確認を繰り返し、
+    // メンテナンス時などにログと接続試行が増えるため、次の検索バッチまで待たせる。
     public async Task<NicovideoSearchResult?> WaitForNextResultAsync(string channel, string? failedLvId, CancellationToken ct)
     {
         var cached = _lastBatch;
@@ -84,7 +86,7 @@ public class NicovideoSearchService
         {
             cached.Results.TryGetValue(channel, out var cachedResult);
             // スクレイピングに失敗した lv と同じキャッシュはスキップして次のバッチを待つ
-            if (failedLvId == null || cachedResult?.LvId != failedLvId)
+            if (cachedResult != null && (failedLvId == null || cachedResult.LvId != failedLvId))
                 return cachedResult;
         }
 

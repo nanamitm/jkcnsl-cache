@@ -1437,7 +1437,12 @@ function createSourceListItem(source: ChannelSource, className: string, channelV
 
 function appendSourceTarget(target: HTMLElement, source: ChannelSource, prefixSpace = false) {
   if (!source.configured) return
-  if (source.status === 'retryWaiting') {
+  if (source.status === 'fallbackLocal') {
+    const scheduled = source.isReserved && source.scheduledStartUtc
+      ? ` ${formatJst(source.scheduledStartUtc)} 予定`
+      : ''
+    target.append(`${prefixSpace ? ' ' : ''}ローカル待避中${scheduled}`)
+  } else if (source.status === 'retryWaiting') {
     target.append(`${prefixSpace ? ' ' : ''}取得失敗`)
     if (isNicovideoWatchTarget(source.currentTarget)) {
       target.append(' ')
@@ -1484,6 +1489,7 @@ function formatRefugeTarget(target: string) {
 
 function sourceStatusClass(source: ChannelSource | undefined) {
   if (!source?.configured) return 'off'
+  if (source.status === 'fallbackLocal') return 'pending'
   if (source.status === 'retryWaiting') return 'pending'
   if (source.sourceType === 'unofficial' && source.isReserved) return 'pending'
   return source.running ? 'on' : 'off'
@@ -2098,7 +2104,7 @@ function updateStageInfo() {
   const source = selected?.source ?? null
 
   if (wsState === 'connected') {
-    if (!(source?.sourceType === 'unofficial' && (source.isReserved || source.status === 'retryWaiting'))) {
+    if (!(source?.status === 'fallbackLocal' || source?.sourceType === 'unofficial' && (source.isReserved || source.status === 'retryWaiting'))) {
       stageInfo.className = 'si-hidden'
       stageInfo.innerHTML = ''
       updateConnectionAction()
@@ -2115,7 +2121,9 @@ function updateStageInfo() {
 
   let statusHtml = ''
   if (wsState === 'connected') {
-    statusHtml = source?.sourceType === 'unofficial' && source.status === 'retryWaiting'
+    statusHtml = source?.status === 'fallbackLocal'
+      ? '<div class="si-status si-connecting">ローカル待避中</div>'
+      : source?.sourceType === 'unofficial' && source.status === 'retryWaiting'
       ? '<div class="si-status si-connecting">配信情報の取得に失敗しました</div>'
       : source?.sourceType === 'unofficial' && source.isReserved
       ? '<div class="si-status si-connecting">配信開始まで待機中</div>'
@@ -2132,7 +2140,14 @@ function updateStageInfo() {
   }
 
   let extraHtml = ''
-  if (source?.sourceType === 'unofficial' && source.status === 'retryWaiting') {
+  if (source?.status === 'fallbackLocal') {
+    if (source.isReserved && source.scheduledStartUtc) {
+      const diff = new Date(source.scheduledStartUtc).getTime() - Date.now()
+      extraHtml = `<div class="si-scheduled" id="si-scheduled-line">◇ ${formatJst(source.scheduledStartUtc)} JST 配信予定 (${formatCountdown(diff)}) / ログインなしで投稿できます</div>`
+    } else {
+      extraHtml = '<div class="si-scheduled" id="si-scheduled-line">◇ 上流回復までログインなしで投稿できます</div>'
+    }
+  } else if (source?.sourceType === 'unofficial' && source.status === 'retryWaiting') {
     extraHtml = '<div class="si-scheduled" id="si-scheduled-line">◇ 次の検索まで待機中</div>'
   } else if (source?.sourceType === 'unofficial' && source.isReserved && source.scheduledStartUtc) {
     const diff = new Date(source.scheduledStartUtc).getTime() - Date.now()

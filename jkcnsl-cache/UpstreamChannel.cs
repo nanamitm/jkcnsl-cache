@@ -8,16 +8,21 @@ namespace jkcnsl_cache;
 public sealed class UpstreamChannel : UpstreamChannelBase
 {
     private readonly string _upstreamUrl;
+    private readonly int _fallbackMaxCommentLength;
     private readonly object _controlMessageLock = new();
     private readonly List<byte[]> _controlMessages = new();
     private string? _upstreamThreadId;
     private long _upstreamVposBaseTicks; // 0 = 未取得、正値 = UTC Ticks
 
     public override string? CurrentTarget => IsRunning ? _upstreamUrl : null;
+    public override string Status => IsLocalFallbackActive ? "fallbackLocal" : base.Status;
+    public override string? StatusText => IsLocalFallbackActive ? "ローカル待避中" : null;
     public override DateTimeOffset? VposBaseTime
     {
         get
         {
+            if (IsLocalFallbackActive)
+                return base.VposBaseTime;
             var t = Interlocked.Read(ref _upstreamVposBaseTicks);
             return t > 0 ? new DateTimeOffset(t, TimeSpan.Zero) : null;
         }
@@ -33,6 +38,9 @@ public sealed class UpstreamChannel : UpstreamChannelBase
 
     public override async Task<ReadOnlyMemory<byte>> PostCommentAsync(ReadOnlyMemory<byte> json, CancellationToken ct)
     {
+        if (IsLocalFallbackActive)
+            return await PostLocalFallbackCommentAsync(json, null, _fallbackMaxCommentLength, ct);
+
         var tcs = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
         await _postChannel.Writer.WriteAsync(new PostRequest(json.ToArray(), tcs), ct);
         try
@@ -45,10 +53,11 @@ public sealed class UpstreamChannel : UpstreamChannelBase
         }
     }
 
-    public UpstreamChannel(string channel, string upstreamUrl, ILogger logger, MetricsService metrics)
+    public UpstreamChannel(string channel, string upstreamUrl, IConfiguration config, ILogger logger, MetricsService metrics)
         : base(channel, logger, metrics)
     {
         _upstreamUrl = upstreamUrl;
+        _fallbackMaxCommentLength = Math.Max(1, config.GetValue<int>("CacheServer:LocalStream:MaxCommentLength", 75));
     }
 
     public override async Task AddClientAndWaitAsync(WebSocket ws, CancellationToken ct)
@@ -61,6 +70,8 @@ public sealed class UpstreamChannel : UpstreamChannelBase
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
     {
+        try
+        {
         using var watchWs = new ClientWebSocket();
         using var commentWs = new ClientWebSocket();
         commentWs.Options.AddSubProtocol("msg.nicovideo.jp#json");
@@ -154,6 +165,13 @@ public sealed class UpstreamChannel : UpstreamChannelBase
         _pendingPostTcs?.TrySetResult(
             "{\"type\":\"error\",\"data\":{\"code\":\"CONNECTION_LOST\"}}"u8.ToArray());
         _pendingPostTcs = null;
+        SetLocalFallbackActive(true);
+        }
+        catch
+        {
+            SetLocalFallbackActive(true);
+            throw;
+        }
     }
 
     private async Task HandleWatchMessageAsync(ClientWebSocket watchWs, ClientWebSocket commentWs,
@@ -199,6 +217,7 @@ public sealed class UpstreamChannel : UpstreamChannelBase
                     DateTimeOffset.TryParse(vbtStr, null, System.Globalization.DateTimeStyles.RoundtripKind, out var vbt))
                     Interlocked.Exchange(ref _upstreamVposBaseTicks, vbt.UtcTicks);
                 await commentWs.ConnectAsync(new Uri(commentUri), ct);
+                SetLocalFallbackActive(false);
                 var openMsg = $$$"""[{"ping":{"content":"rs: 0"}},{"ping":{"content":"ps: 0"}},{"thread":{"thread":"{{{threadId}}}","threadkey":"{{{postKey}}}","user_id":"guest","nicoru":0,"res_from":-10,"scores":1,"version":"20061206","with_global":1}},{"ping":{"content":"pf: 0"}},{"ping":{"content":"rf: 0"}}]""";
                 await SendTextAsync(commentWs, openMsg, ct);
                 state.CommentConnected = true;

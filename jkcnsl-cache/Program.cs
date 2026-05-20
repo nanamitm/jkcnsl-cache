@@ -296,6 +296,7 @@ static ChannelSourceStatus CreateSourceStatus(ChannelManager mgr, string key, st
     var isReserved = mgr.IsChannelScheduled(key);
     var (status, statusText) = mgr.GetChannelStatus(key);
     sourceType = SourceTypeFromDisplayType(type, defaultSourceType);
+    var isLocalFallback = status == "fallbackLocal";
     return new ChannelSourceStatus(
         key,
         sourceType,
@@ -312,7 +313,7 @@ static ChannelSourceStatus CreateSourceStatus(ChannelManager mgr, string key, st
         status,
         statusText,
         Commentable(sourceType),
-        RequiresAuth(sourceType),
+        !isLocalFallback && RequiresAuth(sourceType),
         $"/watch/{key}",
         $"/comment/{key}");
 }
