@@ -28,6 +28,9 @@ public class NicovideoSearchService
     // 直近の検索結果キャッシュ（スリープ中にバッチを逃したチャンネルが即座に取得できるよう）
     private sealed record CachedBatch(IReadOnlyDictionary<string, NicovideoSearchResult?> Results, DateTimeOffset At);
     private volatile CachedBatch? _lastBatch;
+    private readonly Dictionary<string, SearchLogState?> _lastLoggedStates = new();
+
+    private sealed record SearchLogState(string LvId, bool IsReserved, DateTime? ScheduledStartUtc);
 
     public NicovideoSearchService(IConfiguration config, ILogger<NicovideoSearchService> logger,
         ChannelCatalog channelCatalog)
@@ -156,7 +159,7 @@ public class NicovideoSearchService
                     continue;
                 }
                 results[channel] = new NicovideoSearchResult(lvId, null);
-                _logger.LogInformation("[SearchService] [{Channel}] onair: {LvId} ({Title})", channel, lvId, title);
+                LogResultChange(channel, results[channel], title);
                 break;
             }
             if (results[channel] != null) continue;
@@ -183,13 +186,15 @@ public class NicovideoSearchService
                         startTime = TimeZoneInfo.ConvertTimeToUtc(jst, _broadcastTz);
                 }
                 results[channel] = new NicovideoSearchResult(lvId, startTime, IsReserved: true);
-                _logger.LogInformation("[SearchService] [{Channel}] 配信予定: {LvId} → {Time} JST",
-                    channel, lvId, startTime.HasValue ? startTime.Value.AddHours(9).ToString("MM/dd") : "時刻不明");
+                LogResultChange(channel, results[channel], title);
                 break;
             }
 
             if (results[channel] == null)
+            {
+                LogResultChange(channel, null, null);
                 _logger.LogDebug("[SearchService] [{Channel}] 配信なし・予定なし", channel);
+            }
         }
 
         return results;
@@ -216,6 +221,42 @@ public class NicovideoSearchService
             _logger.LogWarning(ex, "[SearchService] 検索ページ取得失敗 (status={Status})", status);
             return [];
         }
+    }
+
+    private void LogResultChange(string channel, NicovideoSearchResult? result, string? title)
+    {
+        var next = result == null
+            ? null
+            : new SearchLogState(result.LvId, result.IsReserved, result.ScheduledStartUtc);
+
+        _lastLoggedStates.TryGetValue(channel, out var previous);
+        if (Equals(previous, next))
+        {
+            if (result != null)
+            {
+                _logger.LogDebug("[SearchService] [{Channel}] {State}: {LvId} (変化なし)",
+                    channel, result.IsReserved ? "reserved" : "onair", result.LvId);
+            }
+            return;
+        }
+
+        _lastLoggedStates[channel] = next;
+        if (result == null)
+        {
+            _logger.LogInformation("[SearchService] [{Channel}] 配信なし・予定なし", channel);
+            return;
+        }
+
+        if (result.IsReserved)
+        {
+            _logger.LogInformation("[SearchService] [{Channel}] 配信予定: {LvId} → {Time} JST",
+                channel, result.LvId,
+                result.ScheduledStartUtc.HasValue ? result.ScheduledStartUtc.Value.AddHours(9).ToString("MM/dd HH:mm") : "時刻不明");
+            return;
+        }
+
+        _logger.LogInformation("[SearchService] [{Channel}] onair: {LvId} ({Title})",
+            channel, result.LvId, title ?? "");
     }
 
     // lv が officialChId の公式チャンネル配信かどうかを確認（watch ページの embedded-data を参照）
