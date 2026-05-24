@@ -20,6 +20,7 @@ public abstract class UpstreamChannelBase
     private long _fallbackNextNo = 0;
     private long _fallbackVposBaseTicks = DateTimeOffset.UtcNow.UtcTicks;
     private volatile bool _localFallbackActive = false;
+    private int _reconnectDelaySec = 10;
     private readonly Queue<long> _recentMs = new();
     private readonly object _statsLock = new();
 
@@ -79,6 +80,9 @@ public abstract class UpstreamChannelBase
             Interlocked.Exchange(ref _fallbackVposBaseTicks, DateTimeOffset.UtcNow.UtcTicks);
         _localFallbackActive = active;
     }
+
+    protected void ResetReconnectBackoff() =>
+        Interlocked.Exchange(ref _reconnectDelaySec, 10);
 
     protected Task<ReadOnlyMemory<byte>> PostLocalFallbackCommentAsync(
         ReadOnlyMemory<byte> json, string? localUserId, int maxCommentLength, CancellationToken ct)
@@ -265,14 +269,14 @@ public abstract class UpstreamChannelBase
 
     private async Task RunLoopAsync(CancellationToken ct)
     {
-        int delaySec = 10;
+        ResetReconnectBackoff();
         while (!ct.IsCancellationRequested)
         {
             try
             {
                 await ConnectAndReceiveAsync(ct);
                 // 正常切断はすぐ再接続（放送終了→新放送など）、バックオフもリセット
-                delaySec = 10;
+                ResetReconnectBackoff();
                 try { await Task.Delay(5_000, ct); }
                 catch (OperationCanceledException) { break; }
             }
@@ -289,13 +293,14 @@ public abstract class UpstreamChannelBase
                     continue;
                 }
                 // ±50% のジッターを加えてチャンネル間の再接続タイミングを分散
+                var delaySec = Volatile.Read(ref _reconnectDelaySec);
                 var jitterSec = Random.Shared.Next(-delaySec / 2, delaySec / 2);
                 var actualDelay = Math.Max(5, delaySec + jitterSec);
                 _logger.LogWarning(ex, "[{Channel}] 上流切断。{Delay}秒後に再接続します", _channel, actualDelay);
                 try { await Task.Delay(actualDelay * 1000, ct); }
                 catch (OperationCanceledException) { break; }
                 // 最大5分まで指数バックオフ
-                delaySec = Math.Min(delaySec * 2, 300);
+                Interlocked.Exchange(ref _reconnectDelaySec, Math.Min(delaySec * 2, 300));
             }
         }
     }

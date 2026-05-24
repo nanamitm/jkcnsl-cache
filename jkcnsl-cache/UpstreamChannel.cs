@@ -222,6 +222,7 @@ public sealed class UpstreamChannel : UpstreamChannelBase
                 await SendTextAsync(commentWs, openMsg, ct);
                 state.CommentConnected = true;
                 _logger.LogInformation("[{Channel}] コメントセッション接続完了", _channel);
+                ResetReconnectBackoff();
                 break;
         }
     }

@@ -520,6 +520,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     {
                         state.ViewUri = vu.GetString();
                         _logger.LogInformation("[{Channel}] messageServer受信: {Uri}", _channel, state.ViewUri);
+                        ResetReconnectBackoff();
                     }
                     if (msData.TryGetProperty("vposBaseTime", out var vbt) &&
                         DateTime.TryParse(vbt.GetString(), out var vposBase))
