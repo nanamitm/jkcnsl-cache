@@ -91,8 +91,9 @@ public sealed class ProgramInfoService : BackgroundService
         _channelCatalog = channelCatalog;
         _timeZone = ResolveTimeZone(config["CacheServer:BroadcastTimeZone"] ?? "Asia/Tokyo");
         _nhkArea = config["CacheServer:NhkProgramApi:Area"] ?? "130";
-        _http = new HttpClient(new HttpClientHandler
+        _http = new HttpClient(new SocketsHttpHandler
         {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             AutomaticDecompression = System.Net.DecompressionMethods.All,
         })
         { Timeout = TimeSpan.FromSeconds(15) };
@@ -1135,9 +1136,28 @@ public sealed class ProgramInfoService : BackgroundService
         var changed = !_hasBroadcastSnapshot;
         var now = TimeZoneInfo.ConvertTime(nowUtc, _timeZone);
         var nextPrograms = new Dictionary<string, ProgramInfo>();
+        var staleAfter = TimeSpan.FromSeconds(Math.Max(60,
+            _config.GetValue<int>("CacheServer:ProgramInfoStaleAfterSeconds", 3600)));
+        var dropAfter = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:ProgramInfoDropAfterSeconds", 86400)));
 
         lock (_lock)
         {
+            var dataAge = _lastFetchUtc == DateTimeOffset.MinValue
+                ? TimeSpan.MaxValue
+                : nowUtc - _lastFetchUtc;
+            // 取得から極端に時間が経過した EPG はそもそも信用しない
+            if (dataAge > dropAfter)
+            {
+                if (_currentPrograms.Count > 0)
+                {
+                    _currentPrograms.Clear();
+                    changed = true;
+                }
+                return changed;
+            }
+            var dataIsStale = dataAge > staleAfter;
+
             foreach (var info in _channelCatalog.All)
             {
                 if (!_epgPrograms.TryGetValue(info.Video, out var programs))
@@ -1147,7 +1167,7 @@ public sealed class ProgramInfoService : BackgroundService
                 if (current == null) continue;
 
                 var next = new ProgramInfo(current.Title, current.StartAt, current.EndAt,
-                    current.Source, current.GenreCode, current.GenreName, FormatServerTime(), false);
+                    current.Source, current.GenreCode, current.GenreName, FormatServerTime(), dataIsStale);
                 nextPrograms[info.Video] = next;
             }
 

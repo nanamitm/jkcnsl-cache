@@ -19,6 +19,20 @@ public class ChannelManager
     private readonly MetricsService _metrics;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
 
+    private static readonly HttpClient _watchScrapeClient = CreateWatchScrapeClient();
+    private static HttpClient CreateWatchScrapeClient()
+    {
+        var client = new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+            UseCookies = false,
+        });
+        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
+        client.DefaultRequestHeaders.Add("Accept", "*/*");
+        return client;
+    }
+
     public ChannelManager(IConfiguration config, ILogger<ChannelManager> logger, ILoggerFactory loggerFactory,
         NicovideoSearchService searchService, LocalStreamConnectionLimiter localStreamLimiter,
         ChannelCatalog channelCatalog, MetricsService metrics)
@@ -87,6 +101,10 @@ public class ChannelManager
             var localUserId = $"local-{Random.Shared.NextInt64(0x100000000L):x8}";
             var localPostInterval = TimeSpan.FromMilliseconds(Math.Max(0,
                 _config.GetValue<int>("CacheServer:LocalStream:PostIntervalMilliseconds", 1000)));
+            // ニコニコへの投稿は1セッション内でも一定の間隔を空ける（IP BAN防止）
+            var nicovideoPostInterval = TimeSpan.FromMilliseconds(Math.Max(0,
+                _config.GetValue<int>("CacheServer:NicovideoPostIntervalMilliseconds", 500)));
+            DateTimeOffset lastNicovideoPostUtc = DateTimeOffset.MinValue;
             try
             {
                 var r = await ReceiveWatchAsync(ws, buf, watchIdleTimeout, ct);
@@ -132,16 +150,27 @@ public class ChannelManager
             // メッセージループ: keepSeat は生存確認、postComment は上流に転送
             try
             {
+                using var msgStream = new MemoryStream();
                 while (ws.State == WebSocketState.Open)
                 {
                     var result = await ReceiveWatchAsync(ws, buf, watchIdleTimeout, ct);
                     if (result.MessageType == WebSocketMessageType.Close) break;
-                    if (result.MessageType != WebSocketMessageType.Text) continue;
+                    if (result.MessageType != WebSocketMessageType.Text)
+                    {
+                        msgStream.SetLength(0);
+                        continue;
+                    }
+                    msgStream.Write(buf, 0, result.Count);
+                    if (!result.EndOfMessage) continue;
+
+                    var msgLen = (int)msgStream.Length;
+                    var msgBytes = msgStream.GetBuffer();
+                    msgStream.SetLength(0);
 
                     string? msgType = null;
                     try
                     {
-                        using var doc = System.Text.Json.JsonDocument.Parse(buf.AsMemory(0, result.Count));
+                        using var doc = System.Text.Json.JsonDocument.Parse(msgBytes.AsMemory(0, msgLen));
                         if (doc.RootElement.TryGetProperty("type", out var tp))
                             msgType = tp.GetString();
                     }
@@ -164,6 +193,14 @@ public class ChannelManager
                             _metrics.RecordPostResult("POST_TOO_FAST");
                             continue;
                         }
+                        if (!isLocalPostTarget && DateTimeOffset.UtcNow - lastNicovideoPostUtc < nicovideoPostInterval)
+                        {
+                            await ws.SendAsync(
+                                "{\"type\":\"error\",\"data\":{\"code\":\"POST_TOO_FAST\"}}"u8.ToArray(),
+                                WebSocketMessageType.Text, true, ct);
+                            _metrics.RecordPostResult("POST_TOO_FAST");
+                            continue;
+                        }
 
                         if (!commentable)
                         {
@@ -179,18 +216,20 @@ public class ChannelManager
                             // per-client NicoNico セッション経由で投稿
                             _logger.LogDebug("[{Ch}] per-client投稿: target={T}", channel, watchTarget);
                             response = await PostViaNicovideoAsync(
-                                watchTarget, clientCookie, buf.AsMemory(0, result.Count), _logger, channel, ct);
+                                watchTarget, clientCookie, msgBytes.AsMemory(0, msgLen), _logger, channel, ct);
                         }
                         else
                         {
                             // 共有 upstream セッション経由で投稿（NX-Jikkyo 等）
                             var postJson = isLocalPostTarget
-                                ? AddLocalUserId(buf.AsMemory(0, result.Count), localUserId)
-                                : buf.AsMemory(0, result.Count);
+                                ? AddLocalUserId(msgBytes.AsMemory(0, msgLen), localUserId)
+                                : msgBytes.AsMemory(0, msgLen);
                             response = await upstream.PostCommentAsync(postJson, ct);
                         }
                         if (isLocalPostTarget)
                             lastLocalPostUtc = DateTimeOffset.UtcNow;
+                        else
+                            lastNicovideoPostUtc = DateTimeOffset.UtcNow;
 
                         _metrics.RecordPostResult(ParsePostResultCode(response));
                         _logger.LogDebug("[{Ch}] postComment応答: {R}", channel,
@@ -248,8 +287,9 @@ public class ChannelManager
         await upstream.AddClientAndWaitAsync(ws, channel, ct);
 
         // 監視専用チャンネルは停止しない。クライアントが全員切断した通常チャンネルは停止
-        if (upstream.ClientCount == 0 && !upstream.IsMonitored && _channels.TryRemove(canonical, out var removed))
-            _ = removed.StopAsync();
+        if (upstream.ClientCount == 0 && !upstream.IsMonitored &&
+            _channels.TryRemove(new KeyValuePair<string, UpstreamChannelBase>(canonical, upstream)))
+            _ = upstream.StopAsync();
         }
         finally
         {
@@ -447,14 +487,13 @@ public class ChannelManager
     private static async Task<string?> ScrapeNicoWatchUrlAsync(
         string watchTarget, string cookie, CancellationToken ct)
     {
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
-        http.DefaultRequestHeaders.Add("Accept", "*/*");
-        http.DefaultRequestHeaders.Add("Cookie", cookie);
         try
         {
-            var html = await http.GetStringAsync(
-                $"https://live.nicovideo.jp/watch/{watchTarget}", ct);
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                $"https://live.nicovideo.jp/watch/{watchTarget}");
+            request.Headers.TryAddWithoutValidation("Cookie", cookie);
+            using var response = await _watchScrapeClient.SendAsync(request, ct);
+            var html = await response.Content.ReadAsStringAsync(ct);
             var m = Regex.Match(html, @"<script[^>]* id=""embedded-data""[^>]*>");
             if (!m.Success) return null;
             m = Regex.Match(m.Value, @" data-props=""([^""]*)""");
@@ -515,6 +554,7 @@ public class ChannelManager
                 if (!r.EndOfMessage) continue;
 
                 using var doc = JsonDocument.Parse(buf.AsMemory(0, bufCount));
+                var msgCount = bufCount;
                 bufCount = 0;
                 var type = doc.RootElement.TryGetProperty("type", out var tp) ? tp.GetString() : null;
                 switch (type)
@@ -523,7 +563,7 @@ public class ChannelManager
                         await SendWsTextAsync(watchWs, """{"type":"pong"}""", timeoutCts.Token);
                         break;
                     case "error":
-                        return buf.AsMemory(0, bufCount).ToArray();
+                        return buf.AsMemory(0, msgCount).ToArray();
                     case "seat":
                         seatReceived = true;
                         break;

@@ -54,7 +54,7 @@ public sealed class UpstreamChannel : UpstreamChannelBase
     }
 
     public UpstreamChannel(string channel, string upstreamUrl, IConfiguration config, ILogger logger, MetricsService metrics)
-        : base(channel, logger, metrics)
+        : base(channel, logger, metrics, config)
     {
         _upstreamUrl = upstreamUrl;
         _fallbackMaxCommentLength = Math.Max(1, config.GetValue<int>("CacheServer:LocalStream:MaxCommentLength", 75));

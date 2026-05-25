@@ -67,11 +67,14 @@ public abstract class UpstreamChannelBase
         }
     }
 
-    protected UpstreamChannelBase(string channel, ILogger logger, MetricsService? metrics = null)
+    protected UpstreamChannelBase(string channel, ILogger logger, MetricsService? metrics = null,
+        IConfiguration? config = null)
     {
         _channel = channel;
         _logger = logger;
         _metrics = metrics;
+        _commentIdleTimeout = TimeSpan.FromSeconds(Math.Max(30,
+            config?.GetValue<int>("CacheServer:CommentIdleTimeoutSeconds", 600) ?? 600));
     }
 
     protected void SetLocalFallbackActive(bool active)
@@ -139,17 +142,35 @@ public abstract class UpstreamChannelBase
         }
     }
 
+    // コメントクライアントが何も送ってこない場合の最大待ち時間
+    // （ネットワーク機器/NAT 経路でゾンビ化した接続を検出するため）
+    private readonly TimeSpan _commentIdleTimeout;
+    protected virtual TimeSpan CommentIdleTimeout => _commentIdleTimeout;
+
     public virtual async Task AddClientAndWaitAsync(WebSocket ws, CancellationToken ct)
     {
         var id = Guid.NewGuid();
         _clients[id] = ws;
 
         var buf = new byte[256];
+        var idleTimeout = CommentIdleTimeout;
         try
         {
             while (ws.State == WebSocketState.Open && !ct.IsCancellationRequested)
             {
-                var result = await ws.ReceiveAsync(buf, ct);
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeoutCts.CancelAfter(idleTimeout);
+                WebSocketReceiveResult result;
+                try
+                {
+                    result = await ws.ReceiveAsync(buf, timeoutCts.Token);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    _logger.LogDebug("[{Channel}] コメントセッションがアイドルタイムアウトしました: timeoutSeconds={T}",
+                        _channel, (int)idleTimeout.TotalSeconds);
+                    break;
+                }
                 if (result.MessageType == WebSocketMessageType.Close) break;
             }
         }

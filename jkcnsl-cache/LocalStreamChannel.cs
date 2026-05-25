@@ -35,7 +35,7 @@ public sealed class LocalStreamChannel : UpstreamChannelBase
 
     public LocalStreamChannel(string channel, IConfiguration config, ILogger logger,
         LocalStreamConnectionLimiter limiter, MetricsService metrics)
-        : base(channel, logger, metrics)
+        : base(channel, logger, metrics, config)
     {
         _limiter = limiter;
         _metrics = metrics;

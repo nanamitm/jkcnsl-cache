@@ -56,34 +56,50 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
             "{\"type\":\"error\",\"data\":{\"code\":\"COMMENT_POST_NOT_ALLOWED\"}}"u8.ToArray());
     }
 
-    private readonly HttpClient _pageClient = new(new HttpClientHandler
-    {
-        AutomaticDecompression = System.Net.DecompressionMethods.All,
-        UseCookies = false
-    }) { Timeout = TimeSpan.FromSeconds(10) };
+    // HttpClient はチャンネルインスタンスではなくクラス全体で共有する。
+    // インスタンスごとに保有すると、チャンネル再生成時にソケットがリークし、
+    // また PooledConnectionLifetime による DNS 再解決も効かなくなる。
+    private static readonly HttpClient _pageClient = CreatePageClient();
+    private static readonly HttpClient _streamClient = CreateStreamClient();
 
-    private readonly HttpClient _streamClient = new(new HttpClientHandler
+    private static HttpClient CreatePageClient()
     {
-        AutomaticDecompression = System.Net.DecompressionMethods.All,
-        UseCookies = false
-    });
+        var client = new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+            UseCookies = false,
+        }) { Timeout = TimeSpan.FromSeconds(10) };
+        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
+        client.DefaultRequestHeaders.Add("Accept", "*/*");
+        return client;
+    }
+
+    private static HttpClient CreateStreamClient()
+    {
+        var client = new HttpClient(new SocketsHttpHandler
+        {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            AutomaticDecompression = System.Net.DecompressionMethods.All,
+            UseCookies = false,
+        });
+        client.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
+        client.DefaultRequestHeaders.Add("Accept", "*/*");
+        client.DefaultRequestHeaders.Add("Origin", "https://live.nicovideo.jp");
+        client.DefaultRequestHeaders.Add("Referer", "https://live.nicovideo.jp/");
+        return client;
+    }
 
     private const int MaxChunkSize = 1048576;
 
     public NicovideoUpstreamChannel(string channel, string lvId, IConfiguration config, ILogger logger, TimeSpan noStreamCheckInterval,
         MetricsService metrics, NicovideoSearchService? searchService = null)
-        : base(channel, logger, metrics)
+        : base(channel, logger, metrics, config)
     {
         _lvId = lvId;
         _noStreamCheckInterval = noStreamCheckInterval;
         _searchService = searchService;
         _fallbackMaxCommentLength = Math.Max(1, config.GetValue<int>("CacheServer:LocalStream:MaxCommentLength", 75));
-        _pageClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
-        _pageClient.DefaultRequestHeaders.Add("Accept", "*/*");
-        _streamClient.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
-        _streamClient.DefaultRequestHeaders.Add("Accept", "*/*");
-        _streamClient.DefaultRequestHeaders.Add("Origin", "https://live.nicovideo.jp");
-        _streamClient.DefaultRequestHeaders.Add("Referer", "https://live.nicovideo.jp/");
     }
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
@@ -229,7 +245,9 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         var msEntry = new MemoryStream();
         var msSegment = new MemoryStream();
         var msPrefetch = new MemoryStream();
-        var readBuf = new byte[512];
+        var readBufEntry    = new byte[512];
+        var readBufSegment  = new byte[512];
+        var readBufPrefetch = new byte[512];
         Task keepSeatTask = Task.Delay(Timeout.Infinite, ct);
 
 
@@ -284,7 +302,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (entryStream == null)
                     {
                         entryStream = await (Task<Stream>)entryTask;
-                        entryTask = ReadProtoBufChunkAsync(entryStream, msEntry, readBuf, ct);
+                        entryTask = ReadProtoBufChunkAsync(entryStream, msEntry, readBufEntry, ct);
                     }
                     else
                     {
@@ -314,7 +332,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                                     prefetchTask = _streamClient.GetStreamAsync(segUri, ct);
                                 }
                             }
-                            entryTask = ReadProtoBufChunkAsync(entryStream, msEntry, readBuf, ct);
+                            entryTask = ReadProtoBufChunkAsync(entryStream, msEntry, readBufEntry, ct);
                         }
                     }
                     continue;
@@ -327,7 +345,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (segmentStream == null)
                     {
                         segmentStream = await (Task<Stream>)segmentTask;
-                        segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBuf, ct);
+                        segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBufSegment, ct);
                     }
                     else
                     {
@@ -344,13 +362,13 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                             if (segmentTask == null && segmentStream != null)
                             {
                                 chunkedMessage = ProtoBuf.Serializer.Deserialize<ChunkedMessage>(msPrefetch);
-                                segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBuf, ct);
+                                segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBufSegment, ct);
                             }
                         }
                         else
                         {
                             chunkedMessage = ProtoBuf.Serializer.Deserialize<ChunkedMessage>(ms);
-                            segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBuf, ct);
+                            segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBufSegment, ct);
                         }
                     }
                 }
@@ -359,7 +377,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (prefetchStream == null)
                     {
                         prefetchStream = await (Task<Stream>)prefetchTask;
-                        prefetchTask = ReadProtoBufChunkAsync(prefetchStream, msPrefetch, readBuf, ct);
+                        prefetchTask = ReadProtoBufChunkAsync(prefetchStream, msPrefetch, readBufPrefetch, ct);
                     }
                     else if (await (Task<MemoryStream?>)prefetchTask == null)
                     {
@@ -399,7 +417,6 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
             _scheduledStartUtc = null;
             _isScheduled = false;
             if (!_isRetryWaiting) SetLocalFallbackActive(true);
-            if (!_isRetryWaiting) _isRetryWaiting = false;
             prefetchStream?.Close();
             segmentStream?.Close();
             entryStream?.Close();

@@ -44,10 +44,11 @@ public class NicovideoSearchService
             : TimeZoneInfo.FindSystemTimeZoneById(tzId);
         _logger.LogInformation("[SearchService] 配信時刻のタイムゾーン: {Tz}", _broadcastTz.DisplayName);
 
-        _http = new HttpClient(new HttpClientHandler
+        _http = new HttpClient(new SocketsHttpHandler
         {
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
             AutomaticDecompression = DecompressionMethods.All,
-            UseCookies = false
+            UseCookies = false,
         }) { Timeout = TimeSpan.FromSeconds(15) };
         _http.DefaultRequestHeaders.Add("User-Agent", "Mozilla/5.0");
         _http.DefaultRequestHeaders.Add("Accept", "*/*");
