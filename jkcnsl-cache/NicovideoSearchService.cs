@@ -36,7 +36,9 @@ public class NicovideoSearchService
         ChannelCatalog channelCatalog)
     {
         _logger = logger;
-        _interval = TimeSpan.FromMinutes(config.GetValue<double>("CacheServer:NoStreamCheckIntervalMinutes", 30));
+        var intervalMinutes = Math.Max(1,
+            config.GetValue<double>("CacheServer:NoStreamCheckIntervalMinutes", 30));
+        _interval = TimeSpan.FromMinutes(intervalMinutes);
 
         var tzId = config.GetValue<string>("CacheServer:BroadcastTimeZone");
         _broadcastTz = string.IsNullOrEmpty(tzId)
