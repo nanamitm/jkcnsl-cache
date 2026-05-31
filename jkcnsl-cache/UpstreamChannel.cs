@@ -34,7 +34,13 @@ public sealed class UpstreamChannel : UpstreamChannelBase
             { FullMode = BoundedChannelFullMode.Wait });
     private TaskCompletionSource<ReadOnlyMemory<byte>>? _pendingPostTcs;
 
-    private sealed record PostRequest(byte[] Json, TaskCompletionSource<ReadOnlyMemory<byte>> Tcs);
+    private sealed record PostRequest(
+        byte[] Json,
+        TaskCompletionSource<ReadOnlyMemory<byte>> Tcs,
+        CancellationToken TimeoutToken)
+    {
+        public bool IsCanceled => TimeoutToken.IsCancellationRequested;
+    }
 
     public override async Task<ReadOnlyMemory<byte>> PostCommentAsync(ReadOnlyMemory<byte> json, CancellationToken ct)
     {
@@ -42,12 +48,15 @@ public sealed class UpstreamChannel : UpstreamChannelBase
             return await PostLocalFallbackCommentAsync(json, null, _fallbackMaxCommentLength, ct);
 
         var tcs = new TaskCompletionSource<ReadOnlyMemory<byte>>(TaskCreationOptions.RunContinuationsAsynchronously);
-        await _postChannel.Writer.WriteAsync(new PostRequest(json.ToArray(), tcs), ct);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+        await _postChannel.Writer.WriteAsync(new PostRequest(json.ToArray(), tcs, timeoutCts.Token),
+            timeoutCts.Token);
         try
         {
-            return await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            return await tcs.Task.WaitAsync(timeoutCts.Token);
         }
-        catch (TimeoutException)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             return "{\"type\":\"error\",\"data\":{\"code\":\"TIMEOUT\"}}"u8.ToArray();
         }
@@ -115,6 +124,8 @@ public sealed class UpstreamChannel : UpstreamChannelBase
                 postWaitTask = null;
                 if (_postChannel.Reader.TryRead(out var req))
                 {
+                    if (req.IsCanceled)
+                        continue;
                     _pendingPostTcs = req.Tcs;
                     await watchWs.SendAsync(req.Json, WebSocketMessageType.Text, true, ct);
                 }

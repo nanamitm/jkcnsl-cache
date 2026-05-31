@@ -22,8 +22,10 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
     private volatile string? _failedNonOfficialLvId;
     private volatile bool _isRetryWaiting;
     private long _upstreamVposBaseTicks; // 0 = 未取得、正値 = UTC Ticks
+    private readonly TimeSpan _streamIdleTimeout;
     private static readonly TimeSpan NonOfficialCandidateRetryInterval = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan NonOfficialCandidateRetryLimit = TimeSpan.FromMinutes(1);
+    private static readonly TimeSpan StreamWatchdogInterval = TimeSpan.FromSeconds(30);
 
     public override string? CurrentTarget => _currentLvId ?? _scheduledLvId ?? (!string.IsNullOrEmpty(_lvId) ? _lvId : null);
     // 接続中の lv??? または ch??? を返す（per-client 投稿セッションのスクレイピングに使用）
@@ -100,6 +102,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         _noStreamCheckInterval = noStreamCheckInterval;
         _searchService = searchService;
         _fallbackMaxCommentLength = Math.Max(1, config.GetValue<int>("CacheServer:LocalStream:MaxCommentLength", 75));
+        _streamIdleTimeout = TimeSpan.FromSeconds(Math.Max(60,
+            config.GetValue<int>("CacheServer:NicovideoStreamIdleTimeoutSeconds", 180)));
     }
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
@@ -239,9 +243,9 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         Task? entryTask = null;
         Task? segmentTask = null;
         Task? prefetchTask = null;
-        Stream? entryStream = null;
-        Stream? segmentStream = null;
-        Stream? prefetchStream = null;
+        HttpStreamLease? entryStream = null;
+        HttpStreamLease? segmentStream = null;
+        HttpStreamLease? prefetchStream = null;
         var msEntry = new MemoryStream();
         var msSegment = new MemoryStream();
         var msPrefetch = new MemoryStream();
@@ -249,6 +253,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         var readBufSegment  = new byte[512];
         var readBufPrefetch = new byte[512];
         Task? keepSeatTask = null;
+        Task watchdogTask = Task.Delay(StreamWatchdogInterval, ct);
+        var lastProgressUtc = DateTimeOffset.UtcNow;
 
 
         try
@@ -276,8 +282,22 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 if (entryTask != null) tasks.Add(entryTask);
                 if (segmentTask != null) tasks.Add(segmentTask);
                 if (prefetchTask != null) tasks.Add(prefetchTask);
+                tasks.Add(watchdogTask);
 
                 var completed = await Task.WhenAny(tasks);
+
+                if (completed == watchdogTask)
+                {
+                    var idleFor = DateTimeOffset.UtcNow - lastProgressUtc;
+                    if (idleFor > _streamIdleTimeout)
+                    {
+                        _logger.LogWarning("[{Channel}] nicovideo ストリームが無通信のため再接続します: idleSeconds={IdleSeconds}",
+                            _channel, (int)idleFor.TotalSeconds);
+                        throw new TimeoutException("nicovideo stream idle timeout");
+                    }
+                    watchdogTask = Task.Delay(StreamWatchdogInterval, ct);
+                    continue;
+                }
 
                 if (completed == keepSeatTask)
                 {
@@ -294,6 +314,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     watchCount += r.Count;
                     if (r.EndOfMessage)
                     {
+                        lastProgressUtc = DateTimeOffset.UtcNow;
                         await HandleWatchMessageAsync(watchWs, watchBuf, watchCount, state, ct);
                         watchCount = 0;
                     }
@@ -304,8 +325,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 {
                     if (entryStream == null)
                     {
-                        entryStream = await (Task<Stream>)entryTask;
-                        entryTask = ReadProtoBufChunkAsync(entryStream, msEntry, readBufEntry, ct);
+                        entryStream = await (Task<HttpStreamLease>)entryTask;
+                        entryTask = ReadProtoBufChunkAsync(entryStream.Stream, msEntry, readBufEntry, ct);
                     }
                     else
                     {
@@ -313,11 +334,12 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         entryTask = null;
                         if (ms == null)
                         {
-                            entryStream.Close();
+                            entryStream.Dispose();
                             entryStream = null;
                         }
                         else
                         {
+                            lastProgressUtc = DateTimeOffset.UtcNow;
                             var chunkedEntry = ProtoBuf.Serializer.Deserialize<ChunkedEntry>(ms);
                             if (chunkedEntry.next != null)
                                 state.NextAt = chunkedEntry.next.at.ToString();
@@ -327,15 +349,15 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                             {
                                 var segUri = chunkedEntry.segment.uri;
                                 if (segmentTask == null)
-                                    segmentTask = _streamClient.GetStreamAsync(segUri, ct);
+                                    segmentTask = FetchEntryStreamAsync(segUri, ct);
                                 else if (prefetchTask == null)
                                 {
-                                    prefetchStream?.Close();
+                                    prefetchStream?.Dispose();
                                     prefetchStream = null;
-                                    prefetchTask = _streamClient.GetStreamAsync(segUri, ct);
+                                    prefetchTask = FetchEntryStreamAsync(segUri, ct);
                                 }
                             }
-                            entryTask = ReadProtoBufChunkAsync(entryStream, msEntry, readBufEntry, ct);
+                            entryTask = ReadProtoBufChunkAsync(entryStream.Stream, msEntry, readBufEntry, ct);
                         }
                     }
                     continue;
@@ -347,8 +369,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 {
                     if (segmentStream == null)
                     {
-                        segmentStream = await (Task<Stream>)segmentTask;
-                        segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBufSegment, ct);
+                        segmentStream = await (Task<HttpStreamLease>)segmentTask;
+                        segmentTask = ReadProtoBufChunkAsync(segmentStream.Stream, msSegment, readBufSegment, ct);
                     }
                     else
                     {
@@ -356,7 +378,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         segmentTask = null;
                         if (ms == null)
                         {
-                            segmentStream.Close();
+                            segmentStream.Dispose();
                             // プリフェッチを引き継ぐ
                             segmentTask = prefetchTask;
                             segmentStream = prefetchStream;
@@ -365,13 +387,14 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                             if (segmentTask == null && segmentStream != null)
                             {
                                 chunkedMessage = ProtoBuf.Serializer.Deserialize<ChunkedMessage>(msPrefetch);
-                                segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBufSegment, ct);
+                                segmentTask = ReadProtoBufChunkAsync(segmentStream.Stream, msSegment, readBufSegment, ct);
                             }
                         }
                         else
                         {
+                            lastProgressUtc = DateTimeOffset.UtcNow;
                             chunkedMessage = ProtoBuf.Serializer.Deserialize<ChunkedMessage>(ms);
-                            segmentTask = ReadProtoBufChunkAsync(segmentStream, msSegment, readBufSegment, ct);
+                            segmentTask = ReadProtoBufChunkAsync(segmentStream.Stream, msSegment, readBufSegment, ct);
                         }
                     }
                 }
@@ -379,17 +402,18 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 {
                     if (prefetchStream == null)
                     {
-                        prefetchStream = await (Task<Stream>)prefetchTask;
-                        prefetchTask = ReadProtoBufChunkAsync(prefetchStream, msPrefetch, readBufPrefetch, ct);
+                        prefetchStream = await (Task<HttpStreamLease>)prefetchTask;
+                        prefetchTask = ReadProtoBufChunkAsync(prefetchStream.Stream, msPrefetch, readBufPrefetch, ct);
                     }
                     else if (await (Task<MemoryStream?>)prefetchTask == null)
                     {
                         prefetchTask = null;
-                        prefetchStream.Close();
+                        prefetchStream.Dispose();
                         prefetchStream = null;
                     }
                     else
                     {
+                        lastProgressUtc = DateTimeOffset.UtcNow;
                         prefetchTask = null;
                     }
                 }
@@ -420,9 +444,9 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
             _scheduledStartUtc = null;
             _isScheduled = false;
             if (!_isRetryWaiting) SetLocalFallbackActive(true);
-            prefetchStream?.Close();
-            segmentStream?.Close();
-            entryStream?.Close();
+            prefetchStream?.Dispose();
+            segmentStream?.Dispose();
+            entryStream?.Dispose();
         }
     }
 
@@ -602,7 +626,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         return parts.Length > 0 ? parts.ToString().Substring(1).ToLowerInvariant() : "";
     }
 
-    private async Task<Stream> FetchEntryStreamAsync(string url, CancellationToken ct)
+    private async Task<HttpStreamLease> FetchEntryStreamAsync(string url, CancellationToken ct)
     {
         _logger.LogDebug("[{Channel}] entry GET: {Url}", _channel, url);
         var response = await _streamClient.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -611,13 +635,43 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
             var body = await response.Content.ReadAsStringAsync(ct);
             _logger.LogWarning("[{Channel}] entry HTTP {Status}: {Body}", _channel, (int)response.StatusCode, body);
             if ((int)response.StatusCode == 400)
+            {
+                response.Dispose();
                 throw new EntryStream400Exception();
-            response.EnsureSuccessStatusCode();
+            }
+            try { response.EnsureSuccessStatusCode(); }
+            finally { response.Dispose(); }
         }
-        return await response.Content.ReadAsStreamAsync(ct);
+        try
+        {
+            return new HttpStreamLease(response, await response.Content.ReadAsStreamAsync(ct));
+        }
+        catch
+        {
+            response.Dispose();
+            throw;
+        }
     }
 
     private sealed class EntryStream400Exception : Exception { }
+    private sealed class HttpStreamLease : IDisposable
+    {
+        public HttpResponseMessage Response { get; }
+        public Stream Stream { get; }
+
+        public HttpStreamLease(HttpResponseMessage response, Stream stream)
+        {
+            Response = response;
+            Stream = stream;
+        }
+
+        public void Dispose()
+        {
+            Stream.Dispose();
+            Response.Dispose();
+        }
+    }
+
     private static async Task<MemoryStream?> ReadProtoBufChunkAsync(Stream s, MemoryStream ms, byte[] buf, CancellationToken ct)
     {
         ms.SetLength(0);

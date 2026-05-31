@@ -11,6 +11,8 @@ public abstract class UpstreamChannelBase
     protected readonly ILogger _logger;
     private readonly MetricsService? _metrics;
     private readonly ConcurrentDictionary<Guid, WebSocket> _clients = new();
+    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _clientSendLocks = new();
+    private readonly TimeSpan _broadcastSendTimeout;
     private CancellationTokenSource _cts = new();
     private Task _runTask = Task.CompletedTask;
     private bool _running = false;
@@ -75,6 +77,8 @@ public abstract class UpstreamChannelBase
         _metrics = metrics;
         _commentIdleTimeout = TimeSpan.FromSeconds(Math.Max(30,
             config?.GetValue<int>("CacheServer:CommentIdleTimeoutSeconds", 600) ?? 600));
+        _broadcastSendTimeout = TimeSpan.FromSeconds(Math.Max(1,
+            config?.GetValue<int>("CacheServer:BroadcastSendTimeoutSeconds", 5) ?? 5));
     }
 
     protected void SetLocalFallbackActive(bool active)
@@ -151,6 +155,7 @@ public abstract class UpstreamChannelBase
     {
         var id = Guid.NewGuid();
         _clients[id] = ws;
+        _clientSendLocks[id] = new SemaphoreSlim(1, 1);
 
         var buf = new byte[256];
         var idleTimeout = CommentIdleTimeout;
@@ -179,6 +184,7 @@ public abstract class UpstreamChannelBase
         catch (InvalidOperationException) { }
 
         _clients.TryRemove(id, out _);
+        _clientSendLocks.TryRemove(id, out _);
 
         if (ws.State is WebSocketState.Open or WebSocketState.CloseReceived)
             await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
@@ -204,16 +210,39 @@ public abstract class UpstreamChannelBase
 
     protected async Task BroadcastAsync(ReadOnlyMemory<byte> message)
     {
-        var tasks = _clients.Values
-            .Where(c => c.State == WebSocketState.Open)
-            .Select(async c =>
+        var tasks = _clients.ToArray()
+            .Where(kv => kv.Value.State == WebSocketState.Open)
+            .Select(async kv =>
             {
                 try
                 {
-                    await c.SendAsync(message, WebSocketMessageType.Text, true, CancellationToken.None);
-                    _metrics?.RecordDelivered();
+                    using var timeoutCts = new CancellationTokenSource(_broadcastSendTimeout);
+                    if (!_clientSendLocks.TryGetValue(kv.Key, out var sendLock))
+                        return;
+                    await sendLock.WaitAsync(timeoutCts.Token);
+                    try
+                    {
+                        await kv.Value.SendAsync(message, WebSocketMessageType.Text, true, timeoutCts.Token);
+                        _metrics?.RecordDelivered();
+                    }
+                    finally
+                    {
+                        sendLock.Release();
+                    }
                 }
-                catch { }
+                catch
+                {
+                    if (_clients.TryRemove(kv.Key, out var ws) &&
+                        ws.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                    {
+                        try
+                        {
+                            await ws.CloseAsync(WebSocketCloseStatus.PolicyViolation,
+                                "broadcast send timeout", CancellationToken.None);
+                        }
+                        catch { }
+                    }
+                }
             });
         await Task.WhenAll(tasks);
     }
