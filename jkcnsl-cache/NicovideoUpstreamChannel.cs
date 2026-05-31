@@ -248,15 +248,16 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         var readBufEntry    = new byte[512];
         var readBufSegment  = new byte[512];
         var readBufPrefetch = new byte[512];
-        Task keepSeatTask = Task.Delay(Timeout.Infinite, ct);
+        Task? keepSeatTask = null;
 
 
         try
         {
             while (!ct.IsCancellationRequested && watchWs.State == WebSocketState.Open)
             {
-                // keepSeat
-                if (state.KeepSeatIntervalSec > 0)
+                // keepSeat は seat 受信後に開始し、発火した後だけ再スケジュールする。
+                // ループごとに作り直すと、コメントストリームが活発な間は送信が先送りされ続ける。
+                if (keepSeatTask == null && state.KeepSeatIntervalSec > 0)
                     keepSeatTask = Task.Delay(state.KeepSeatIntervalSec * 1000, ct);
 
                 // HTTP entryストリーム開始
@@ -270,7 +271,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 watchRecvTask ??= watchWs.ReceiveAsync(
                     new ArraySegment<byte>(watchBuf, watchCount, watchBuf.Length - watchCount), ct);
 
-                var tasks = new List<Task> { watchRecvTask, keepSeatTask };
+                var tasks = new List<Task> { watchRecvTask };
+                if (keepSeatTask != null) tasks.Add(keepSeatTask);
                 if (entryTask != null) tasks.Add(entryTask);
                 if (segmentTask != null) tasks.Add(segmentTask);
                 if (prefetchTask != null) tasks.Add(prefetchTask);
@@ -280,6 +282,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 if (completed == keepSeatTask)
                 {
                     await SendTextAsync(watchWs, """{"type":"keepSeat"}""", ct);
+                    keepSeatTask = Task.Delay(state.KeepSeatIntervalSec * 1000, ct);
                     continue;
                 }
 
