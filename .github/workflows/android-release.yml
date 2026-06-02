@@ -71,7 +71,7 @@ jobs:
           ANDROID_keyAlias: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          cmake -S android -B build-android -G Ninja -Wno-dev \
+          cmake -S jkcnsl-cache/android -B build-android -G Ninja -Wno-dev \
             "-DCMAKE_TOOLCHAIN_FILE=${QT_ROOT_DIR}/lib/cmake/Qt6/qt.toolchain.cmake" \
             "-DQT_HOST_PATH=${QT_HOST_PATH}" \
             "-DCMAKE_MAKE_PROGRAM=$(which ninja)" \
