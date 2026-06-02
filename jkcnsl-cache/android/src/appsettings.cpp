@@ -1,5 +1,6 @@
 #include "appsettings.h"
 #include <QtMath>
+#include <QtGlobal>
 
 AppSettings::AppSettings(QObject *parent)
     : QObject(parent)
@@ -7,7 +8,12 @@ AppSettings::AppSettings(QObject *parent)
 {}
 
 QString AppSettings::serverUrl() const {
-    return m_settings.value(QStringLiteral("serverUrl"), QStringLiteral("http://localhost:5000")).toString();
+#ifdef Q_OS_ANDROID
+    const QString defaultUrl = QStringLiteral("http://10.0.2.2:5000");
+#else
+    const QString defaultUrl = QStringLiteral("http://localhost:5000");
+#endif
+    return m_settings.value(QStringLiteral("serverUrl"), defaultUrl).toString();
 }
 
 void AppSettings::setServerUrl(const QString &url) {
@@ -57,7 +63,7 @@ void AppSettings::setUserSession(const QString &session) {
 }
 
 int AppSettings::scrollSpeed() const {
-    return qBound(2000, m_settings.value(QStringLiteral("scrollSpeed"), 7000).toInt(), 12000);
+    return qBound(2000, m_settings.value(QStringLiteral("scrollSpeed"), 4000).toInt(), 12000);
 }
 void AppSettings::setScrollSpeed(int ms) {
     ms = qBound(2000, ms, 12000);
@@ -83,4 +89,13 @@ void AppSettings::setGenreColorEnabled(bool v) {
     if (genreColorEnabled() == v) return;
     m_settings.setValue(QStringLiteral("genreColorEnabled"), v);
     emit genreColorEnabledChanged();
+}
+
+bool AppSettings::commentOverlayMode() const {
+    return m_settings.value(QStringLiteral("commentOverlayMode"), false).toBool();
+}
+void AppSettings::setCommentOverlayMode(bool v) {
+    if (commentOverlayMode() == v) return;
+    m_settings.setValue(QStringLiteral("commentOverlayMode"), v);
+    emit commentOverlayModeChanged();
 }

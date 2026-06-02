@@ -10,6 +10,7 @@ class ChannelProxyModel : public QSortFilterProxyModel {
     Q_PROPERTY(bool    sortByForce READ sortByForce WRITE setSortByForce NOTIFY sortByForceChanged)
     Q_PROPERTY(bool    manageMode           READ manageMode           WRITE setManageMode           NOTIFY manageModeChanged)
     Q_PROPERTY(int     hiddenCount          READ hiddenCount                                         NOTIFY hiddenChannelsChanged)
+    Q_PROPERTY(int     sourceRevision       READ sourceRevision                                      NOTIFY sourceRevisionChanged)
     Q_PROPERTY(bool    terrestrialCollapsed READ terrestrialCollapsed WRITE setTerrestrialCollapsed NOTIFY terrestrialCollapsedChanged)
     Q_PROPERTY(bool    bsCollapsed          READ bsCollapsed          WRITE setBsCollapsed          NOTIFY bsCollapsedChanged)
 
@@ -21,6 +22,7 @@ public:
     bool    sortByForce() const { return m_sortByForce; }
     bool    manageMode()           const { return m_manageMode; }
     int     hiddenCount()          const { return m_hiddenChannels.size(); }
+    int     sourceRevision()       const { return m_sourceRevision; }
     bool    terrestrialCollapsed() const { return m_terrestrialCollapsed; }
     bool    bsCollapsed()          const { return m_bsCollapsed; }
 
@@ -30,6 +32,7 @@ public:
     void setManageMode(bool m);
     void setTerrestrialCollapsed(bool c);
     void setBsCollapsed(bool c);
+    void setSourceModel(QAbstractItemModel *sourceModel) override;
 
     Q_INVOKABLE QVariantList getSourcesByVideo(const QString &video) const;
     Q_INVOKABLE bool isChannelHidden(const QString &video) const;
@@ -42,6 +45,7 @@ signals:
     void sortByForceChanged();
     void manageModeChanged();
     void hiddenChannelsChanged();
+    void sourceRevisionChanged();
     void terrestrialCollapsedChanged();
     void bsCollapsedChanged();
 
@@ -59,6 +63,7 @@ private:
     bool         m_manageMode            = false;
     bool         m_terrestrialCollapsed = false;
     bool         m_bsCollapsed          = false;
+    int          m_sourceRevision       = 0;
     QSet<QString> m_hiddenChannels;
     QSettings    m_settings;
 };

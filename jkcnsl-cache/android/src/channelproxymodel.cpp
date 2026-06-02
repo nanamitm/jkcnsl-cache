@@ -16,6 +16,32 @@ ChannelProxyModel::ChannelProxyModel(QObject *parent)
     loadHidden();
 }
 
+void ChannelProxyModel::setSourceModel(QAbstractItemModel *model) {
+    if (sourceModel()) {
+        disconnect(sourceModel(), nullptr, this, nullptr);
+    }
+
+    QSortFilterProxyModel::setSourceModel(model);
+
+    if (!model)
+        return;
+
+    const auto bumpRevision = [this]() {
+        ++m_sourceRevision;
+        emit sourceRevisionChanged();
+    };
+    connect(model, &QAbstractItemModel::modelReset, this, bumpRevision);
+    connect(model, &QAbstractItemModel::dataChanged, this,
+            [this](const QModelIndex &, const QModelIndex &, const QList<int> &roles) {
+                if (roles.isEmpty()
+                    || roles.contains(ChannelModel::SourcesRole)
+                    || roles.contains(ChannelModel::RunningRole)) {
+                    ++m_sourceRevision;
+                    emit sourceRevisionChanged();
+                }
+            });
+}
+
 void ChannelProxyModel::loadHidden() {
     const QByteArray raw =
         m_settings.value(QStringLiteral("hiddenChannels"), QStringLiteral("[]"))

@@ -1,0 +1,10 @@
+bin/
+obj/
+build/
+android/build/
+android/dist/
+android/android-signing.properties
+android/keystore/
+*.apk
+*.aab
+*.jks

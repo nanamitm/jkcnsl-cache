@@ -20,8 +20,11 @@ Page {
             anchors.fill: parent
             anchors.leftMargin: 4
             ToolButton {
-                text: "‹"
-                font.pixelSize: 26
+                contentItem: UiIcon {
+                    name: "back"
+                    color: root.clr.text
+                    strokeWidth: 2.4
+                }
                 onClicked: root.StackView.view.pop()
             }
             Label {
@@ -203,7 +206,7 @@ Page {
 
                 Button {
                     Layout.fillWidth: true
-                    text: "← パスワード入力に戻る"
+                    text: "< パスワード入力に戻る"
                     flat: true
                     Material.foreground: root.clr.sub
                     onClicked: {

@@ -12,6 +12,7 @@ class AppSettings : public QObject {
     Q_PROPERTY(int     scrollSpeed          READ scrollSpeed          WRITE setScrollSpeed          NOTIFY scrollSpeedChanged)
     Q_PROPERTY(double  scrollRange          READ scrollRange          WRITE setScrollRange          NOTIFY scrollRangeChanged)
     Q_PROPERTY(bool    genreColorEnabled    READ genreColorEnabled    WRITE setGenreColorEnabled    NOTIFY genreColorEnabledChanged)
+    Q_PROPERTY(bool    commentOverlayMode   READ commentOverlayMode   WRITE setCommentOverlayMode   NOTIFY commentOverlayModeChanged)
 
 public:
     explicit AppSettings(QObject *parent = nullptr);
@@ -37,6 +38,8 @@ public:
     void   setScrollRange(double r);
     bool   genreColorEnabled() const;
     void   setGenreColorEnabled(bool v);
+    bool   commentOverlayMode() const;
+    void   setCommentOverlayMode(bool v);
 
 signals:
     void serverUrlChanged();
@@ -47,6 +50,7 @@ signals:
     void scrollSpeedChanged();
     void scrollRangeChanged();
     void genreColorEnabledChanged();
+    void commentOverlayModeChanged();
 
 private:
     QSettings m_settings;

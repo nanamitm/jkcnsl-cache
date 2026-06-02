@@ -430,6 +430,7 @@ static object CreateChannelsStats(ChannelManager mgr, IConfiguration config, Cha
     channels = channelCatalog.All.Select(info =>
     {
         var (force, viewers, totalComments, lastResNo) = mgr.GetAggregatedStats(GetSourceKeys(info));
+        var coChannel = "co" + info.Id;
         return new
         {
             id = info.Id,
@@ -438,6 +439,12 @@ static object CreateChannelsStats(ChannelManager mgr, IConfiguration config, Cha
             viewers,
             comments = totalComments,
             lastResNo,
+            sources = new[]
+            {
+                CreateSourceStatus(mgr, info.Video, "official"),
+                CreateSourceStatus(mgr, coChannel, "unofficial"),
+                CreateSourceStatus(mgr, info.Video + "r", "refuge"),
+            },
         };
     }),
 };

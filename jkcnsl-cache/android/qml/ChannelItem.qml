@@ -12,6 +12,7 @@ ItemDelegate {
     property int    force:            0
     property int    viewers:          0
     property bool   running:          false
+    property var    sources:          []
     property string programTitle:     ""
     property string programGenreCode: ""
 
@@ -22,6 +23,43 @@ ItemDelegate {
     signal hideToggled()   // 管理モードでトグルボタンが押されたとき
 
     readonly property var clr: Colors.get(settings.theme)
+    readonly property var visibleSources: {
+        const list = root.sources || []
+        const result = []
+        for (const source of list) {
+            if (source.configured)
+                result.push(source)
+        }
+        return result.length > 0 ? result : list
+    }
+
+    function sourceState(source) {
+        if (!source || !source.configured)
+            return "off"
+        if (source.status === "fallbackLocal" || source.status === "retryWaiting")
+            return "pending"
+        if (source.sourceType === "unofficial" && source.isReserved)
+            return "pending"
+        return source.running ? "on" : "off"
+    }
+
+    function sourceColor(source) {
+        const state = sourceState(source)
+        if (state === "on")
+            return "#4caf50"
+        if (state === "pending")
+            return "#ffb300"
+        return "transparent"
+    }
+
+    function sourceBorderColor(source) {
+        const state = sourceState(source)
+        if (state === "on")
+            return "#4caf50"
+        if (state === "pending")
+            return "#ffb300"
+        return root.clr.border
+    }
 
     height: 64
     padding: 0; leftPadding: 0; rightPadding: 0
@@ -80,6 +118,24 @@ ItemDelegate {
             spacing: 3
             Layout.minimumWidth: 68
 
+            Row {
+                Layout.alignment: Qt.AlignRight
+                spacing: 4
+                Repeater {
+                    model: root.visibleSources
+                    Rectangle {
+                        width: 8
+                        height: 8
+                        radius: 4
+                        anchors.verticalCenter: parent.verticalCenter
+                        color: root.sourceColor(modelData)
+                        border.color: root.sourceBorderColor(modelData)
+                        border.width: 1
+                        opacity: modelData && modelData.commentable ? 1.0 : 0.45
+                    }
+                }
+            }
+
             Label {
                 text: "勢い " + root.force.toLocaleString()
                 font.pixelSize: 11
@@ -100,9 +156,16 @@ ItemDelegate {
         // 管理モード: 表示/非表示トグルボタン
         ToolButton {
             visible: root.manageMode
-            text: root.isHidden ? "表示" : "非表示"
-            font.pixelSize: 12
+            contentItem: UiIcon {
+                name: root.isHidden ? "eye" : "eyeOff"
+                color: root.isHidden ? Material.accentColor : "#f44336"
+                strokeWidth: 2
+            }
+            implicitWidth: 42
+            implicitHeight: 36
             Material.foreground: root.isHidden ? Material.accentColor : "#f44336"
+            ToolTip.visible: pressed
+            ToolTip.text: root.isHidden ? "表示" : "非表示"
             onClicked: root.hideToggled()
         }
     }

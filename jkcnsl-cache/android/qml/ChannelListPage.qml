@@ -10,39 +10,10 @@ Page {
     readonly property var clr: Colors.get(settings.theme)
     background: Rectangle { color: clr.bg }
 
+    Component.onCompleted: channelModel.searchText = ""
+
     header: Column {
         width: parent.width
-
-        // ─── 検索バー ─────────────────────────────────────────────────
-        Rectangle {
-            width: parent.width
-            height: 48
-            color: clr.bg2
-
-            RowLayout {
-                anchors { fill: parent; leftMargin: 12; rightMargin: 8 }
-                spacing: 4
-
-                TextField {
-                    id: searchField
-                    Layout.fillWidth: true
-                    placeholderText: "チャンネル検索..."
-                    color: clr.text
-                    placeholderTextColor: clr.sub
-                    background: Item {}
-                    font.pixelSize: 14
-                    onTextChanged: channelModel.searchText = text
-                    Material.accent: Material.Blue
-                }
-
-                ToolButton {
-                    visible: searchField.text.length > 0
-                    text: "✕"
-                    font.pixelSize: 14
-                    onClicked: { searchField.clear(); channelModel.searchText = "" }
-                }
-            }
-        }
 
         // ─── フィルター・ソート・管理バー ──────────────────────────────
         Rectangle {
@@ -121,17 +92,29 @@ Page {
 
                     // 勢い順ソート
                     ToolButton {
-                        text: channelModel.sortByForce ? "↓勢い" : "並順"
-                        font.pixelSize: 12
+                        contentItem: UiIcon {
+                            name: "sort"
+                            color: channelModel.sortByForce ? Material.accentColor : clr.sub
+                            strokeWidth: 2
+                        }
+                        implicitWidth: 36
+                        implicitHeight: 32
                         padding: 6
                         Material.foreground: channelModel.sortByForce ? Material.accentColor : clr.sub
+                        ToolTip.visible: pressed
+                        ToolTip.text: channelModel.sortByForce ? "勢い順" : "並順"
                         onClicked: channelModel.sortByForce = !channelModel.sortByForce
                     }
 
                     // 管理モードへ
                     ToolButton {
-                        text: "管理"
-                        font.pixelSize: 12
+                        contentItem: UiIcon {
+                            name: "sliders"
+                            color: clr.sub
+                            strokeWidth: 1.8
+                        }
+                        implicitWidth: 36
+                        implicitHeight: 32
                         padding: 6
                         Material.foreground: clr.sub
                         onClicked: channelModel.manageMode = true
@@ -162,9 +145,17 @@ Page {
 
             RowLayout {
                 anchors { fill: parent; leftMargin: 16; rightMargin: 12 }
+                spacing: 4
+
+                UiIcon {
+                    Layout.preferredWidth: 10
+                    Layout.preferredHeight: 10
+                    name: parent.parent.collapsed ? "caretRight" : "caretDown"
+                    color: clr.sub
+                }
 
                 Label {
-                    text: (parent.parent.collapsed ? "▶ " : "▼ ") + (parent.parent.isBS ? "BS" : "地上波")
+                    text: parent.parent.isBS ? "BS" : "地上波"
                     font.pixelSize: 11; font.weight: Font.Medium; font.letterSpacing: 0.8
                     color: clr.sub
                     Layout.fillWidth: true
@@ -188,6 +179,7 @@ Page {
             force:            model.force
             viewers:          model.viewers
             running:          model.running
+            sources:          model.sources
             programTitle:     model.hasProgram ? model.programTitle : ""
             programGenreCode: model.programGenreCode ?? ""
 

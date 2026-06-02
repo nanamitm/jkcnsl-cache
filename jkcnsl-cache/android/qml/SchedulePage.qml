@@ -73,6 +73,10 @@ Page {
         bsFilter = 0
         selectedGenres = {}
     }
+    function reload() {
+        if (settings.serverUrl.length > 0)
+            scheduleService.fetch(settings.serverUrl, selectedDate)
+    }
 
     // ─── 現在時刻計算 ─────────────────────────────────────────────────
     function calcNowX() {
@@ -101,7 +105,11 @@ Page {
             anchors.rightMargin: 4
 
             ToolButton {
-                text: "‹"; font.pixelSize: 20
+                contentItem: UiIcon {
+                    name: "back"
+                    color: root.clr.text
+                    strokeWidth: 2.2
+                }
                 onClicked: root.selectedDate = root.shiftDate(root.selectedDate, -1)
             }
 
@@ -117,17 +125,28 @@ Page {
             }
 
             ToolButton {
-                text: "›"; font.pixelSize: 20
+                contentItem: UiIcon {
+                    name: "next"
+                    color: root.clr.text
+                    strokeWidth: 2.2
+                }
                 onClicked: root.selectedDate = root.shiftDate(root.selectedDate, +1)
             }
 
             // フィルターボタン
             ToolButton {
-                text: "⊟"
-                font.pixelSize: 16
+                contentItem: UiIcon {
+                    name: "filter"
+                    color: root.hasActiveFilter || root.filterVisible ? Material.accentColor : root.clr.sub
+                    strokeWidth: 2
+                }
+                implicitWidth: 36
+                implicitHeight: 32
                 Material.foreground: root.hasActiveFilter ? Material.accentColor
                                    : root.filterVisible   ? Material.accentColor
                                    :                        root.clr.sub
+                ToolTip.visible: pressed
+                ToolTip.text: "絞込"
                 onClicked: root.filterVisible = !root.filterVisible
             }
         }
@@ -137,13 +156,11 @@ Page {
     onSelectedDateChanged: {
         nowX = -1
         selectedGenres = {}
-        if (settings.serverUrl.length > 0)
-            scheduleService.fetch(settings.serverUrl, selectedDate)
+        reload()
     }
 
     Component.onCompleted: {
-        if (settings.serverUrl.length > 0)
-            scheduleService.fetch(settings.serverUrl, selectedDate)
+        reload()
     }
 
     Connections {
@@ -377,7 +394,7 @@ Page {
     }
 
     // ─── 番組行コンポーネント ─────────────────────────────────────────
-    component ProgramRow: Row {
+    component ProgramRow: Item {
         property var  channelData
         property int  rowHeight
         property real pxPerMin
@@ -386,10 +403,19 @@ Page {
         property var  selectedGenres: ({})
 
         height: rowHeight
+        width: 1440 * pxPerMin
 
         Repeater {
             model: channelData ? channelData.programs : []
             Rectangle {
+                property int offsetMin: {
+                    const s = new Date(modelData.startAt)
+                    const gridStart = new Date(s)
+                    gridStart.setHours(startHour, 0, 0, 0)
+                    if (s < gridStart)
+                        gridStart.setDate(gridStart.getDate() - 1)
+                    return Math.max(0, Math.round((s - gridStart) / 60000))
+                }
                 property int durationMin: {
                     const s = new Date(modelData.startAt)
                     const e = new Date(modelData.endAt)
@@ -401,6 +427,7 @@ Page {
                     return keys.length === 0 || selectedGenres[modelData.genreCode] === true
                 }
 
+                x:       offsetMin * pxPerMin
                 width:   durationMin * pxPerMin
                 height:  rowHeight
                 color:   Colors.genreColor(modelData.genreCode)

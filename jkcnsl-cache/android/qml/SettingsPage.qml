@@ -11,6 +11,12 @@ Page {
     readonly property var clr: Colors.get(settings.theme)
     background: Rectangle { color: clr.bg }
 
+    function applyUrl() {
+        settings.serverUrl = urlField.text.trim()
+        urlField.text = settings.serverUrl
+        applyServerUrl()
+    }
+
     ScrollView {
         anchors.fill: parent
         contentWidth: availableWidth
@@ -20,27 +26,42 @@ Page {
             spacing: 0
 
             // ─── サーバー設定 ──────────────────────────────────────────
-            SectionHeader { text: "サーバー設定" }
+            SectionHeader { heading: "サーバー設定" }
 
             SettingRow {
                 label: "URL"
                 Layout.fillWidth: true
-                TextField {
-                    id: urlField
-                    text: settings.serverUrl
-                    placeholderText: "http://localhost:5000"
-                    font.pixelSize: 13
-                    color: clr.text
-                    placeholderTextColor: clr.sub
-                    background: Item {}
+                RowLayout {
                     Layout.fillWidth: true
-                    inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
-                    onEditingFinished: { settings.serverUrl = text.trim(); applyServerUrl() }
+                    spacing: 8
+
+                    TextField {
+                        id: urlField
+                        text: settings.serverUrl
+                        placeholderText: "http://localhost:5000"
+                        font.pixelSize: 13
+                        color: clr.text
+                        placeholderTextColor: clr.sub
+                        background: Item {}
+                        Layout.fillWidth: true
+                        inputMethodHints: Qt.ImhUrlCharactersOnly | Qt.ImhNoAutoUppercase
+                        onAccepted: applyUrl()
+                    }
+
+                    Button {
+                        text: "適用"
+                        flat: true
+                        font.pixelSize: 12
+                        leftPadding: 10
+                        rightPadding: 10
+                        Material.foreground: Material.accentColor
+                        onClicked: applyUrl()
+                    }
                 }
             }
 
             // ─── 表示設定 ──────────────────────────────────────────────
-            SectionHeader { text: "表示設定" }
+            SectionHeader { heading: "表示設定" }
 
             SettingRow {
                 label: "テーマ"
@@ -100,7 +121,7 @@ Page {
             }
 
             // ─── 弾幕設定 ──────────────────────────────────────────────
-            SectionHeader { text: "弾幕オーバーレイ" }
+            SectionHeader { heading: "弾幕オーバーレイ" }
 
             SettingRow {
                 label: "スクロール速度"
@@ -139,7 +160,7 @@ Page {
             }
 
             // ─── NG ユーザー ───────────────────────────────────────────
-            SectionHeader { text: "NG ユーザー" }
+            SectionHeader { heading: "NG ユーザー" }
 
             SettingRow {
                 label: "追加"
@@ -190,8 +211,11 @@ Page {
                             Layout.fillWidth: true
                         }
                         ToolButton {
-                            text: "✕"
-                            font.pixelSize: 14
+                            contentItem: UiIcon {
+                                name: "clear"
+                                color: "#f44336"
+                                strokeWidth: 2
+                            }
                             Material.foreground: "#f44336"
                             onClicked: ngFilter.removeUser(modelData)
                         }
@@ -209,7 +233,7 @@ Page {
             }
 
             // ─── ニコニコ認証 ──────────────────────────────────────────
-            SectionHeader { text: "ニコニコ認証" }
+            SectionHeader { heading: "ニコニコ認証" }
 
             Rectangle {
                 Layout.fillWidth: true
@@ -239,18 +263,28 @@ Page {
                         }
                         Button {
                             visible: settings.mfaTrustedDeviceToken.length > 0
-                            text: "トークン削除"
+                            contentItem: UiIcon {
+                                name: "trash"
+                                color: "#f44336"
+                                strokeWidth: 2
+                            }
+                            implicitWidth: 38
+                            implicitHeight: 34
                             flat: true
-                            font.pixelSize: 13
                             Material.foreground: "#f44336"
-                            onClicked: settings.mfaTrustedDeviceToken = ""
+                            ToolTip.visible: pressed
+                            ToolTip.text: "トークン削除"
+                            onClicked: {
+                                settings.mfaTrustedDeviceToken = ""
+                                settings.userSession = ""
+                            }
                         }
                     }
                 }
             }
 
             // ─── 接続状態 ──────────────────────────────────────────────
-            SectionHeader { text: "接続状態" }
+            SectionHeader { heading: "接続状態" }
 
             Rectangle {
                 Layout.fillWidth: true
@@ -261,14 +295,14 @@ Page {
                     anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; margins: 16 }
                     spacing: 6
                     Label {
-                        text: "チャンネルWS: " + (channelsWs.connected ? "接続中 ⬤" : "未接続 ○")
+                        text: "チャンネルWS: " + (channelsWs.connected ? "接続中" : "未接続")
                         color: channelsWs.connected ? "#4caf50" : "#f44336"
                         font.pixelSize: 13
                     }
                     Label {
                         text: "コメントWS: " + (commentWs.connected
-                              ? "接続中 ⬤ (" + commentWs.channel + ")"
-                              : "未接続 ○")
+                              ? "接続中 (" + commentWs.channel + ")"
+                              : "未接続")
                         color: commentWs.connected ? "#4caf50" : clr.sub
                         font.pixelSize: 13
                     }
@@ -281,7 +315,8 @@ Page {
 
     // ─── 内部コンポーネント ────────────────────────────────────────────
     component SectionHeader: Label {
-        required text
+        required property string heading
+        text: heading
         topPadding: 20; bottomPadding: 6; leftPadding: 16
         font.pixelSize: 11; font.weight: Font.Medium; font.letterSpacing: 0.8
         color: clr.sub
@@ -307,3 +342,4 @@ Page {
         }
     }
 }
+

@@ -12,7 +12,28 @@ Page {
     readonly property var clr: Colors.get(settings.theme)
     background: Rectangle { color: clr.bg }
 
-    property bool overlayMode: false
+    property bool overlayMode: settings.commentOverlayMode
+    readonly property bool loggedIn: settings.userSession.length > 0
+    readonly property var selectedSource: {
+        channelModel.sourceRevision
+        const all = channelModel.getSourcesByVideo(root.channelVideo)
+        if (!all || all.length === 0)
+            return null
+        const current = commentWs.channel
+        for (const source of all) {
+            if (source.key === current)
+                return source
+        }
+        return all[0]
+    }
+    readonly property bool selectedSourceCommentable:
+        selectedSource ? selectedSource.commentable : false
+    readonly property bool selectedSourceRequiresAuth:
+        selectedSource ? selectedSource.requiresAuth : false
+    readonly property bool postLoginRequired:
+        watchWs.connected && selectedSourceCommentable && selectedSourceRequiresAuth && !loggedIn
+    readonly property bool postInputVisible:
+        watchWs.connected && selectedSourceCommentable && (!selectedSourceRequiresAuth || loggedIn)
 
     // 新着コメントをオーバーレイに流す
     Connections {
@@ -50,8 +71,11 @@ Page {
             anchors.rightMargin: 8
 
             ToolButton {
-                text: "‹"
-                font.pixelSize: 26
+                contentItem: UiIcon {
+                    name: "back"
+                    color: root.clr.text
+                    strokeWidth: 2.4
+                }
                 onClicked: {
                     commentWs.disconnectNow()
                     watchWs.disconnectNow()
@@ -69,16 +93,26 @@ Page {
             }
 
             ToolButton {
-                text: root.overlayMode ? "≡" : "≋"
-                font.pixelSize: 18
+                contentItem: UiIcon {
+                    name: root.overlayMode ? "danmaku" : "list"
+                    color: root.overlayMode ? Material.accentColor : root.clr.sub
+                    strokeWidth: 2
+                }
+                implicitWidth: 36
+                implicitHeight: 32
                 Material.foreground: root.overlayMode ? Material.accentColor : root.clr.sub
-                onClicked: root.overlayMode = !root.overlayMode
+                ToolTip.visible: pressed
+                ToolTip.text: root.overlayMode ? "弾幕表示" : "一覧表示"
+                onClicked: settings.commentOverlayMode = !settings.commentOverlayMode
             }
 
-            Label {
-                text: commentWs.connected ? "⬤" : "○"
-                color: commentWs.connected ? "#4caf50" : "#f44336"
-                font.pixelSize: 12
+            Rectangle {
+                Layout.preferredWidth: 10
+                Layout.preferredHeight: 10
+                radius: 5
+                color: commentWs.connected ? "#4caf50" : "transparent"
+                border.color: commentWs.connected ? "#4caf50" : "#f44336"
+                border.width: 2
             }
         }
     }
@@ -180,11 +214,26 @@ Page {
             }
         }
 
+        Rectangle {
+            width: parent.width
+            height: root.postLoginRequired ? 42 : 0
+            visible: height > 0
+            color: root.clr.header
+            clip: true
+
+            Label {
+                anchors.centerIn: parent
+                text: "コメント投稿にはログインが必要です"
+                color: root.clr.sub
+                font.pixelSize: 12
+            }
+        }
+
         // コメント投稿バー
         Rectangle {
             id: inputBar
             width: parent.width
-            height: watchWs.connected ? 52 : 0
+            height: root.postInputVisible ? 52 : 0
             visible: height > 0
             color: root.clr.header
             clip: true
@@ -208,7 +257,7 @@ Page {
                     id: commentInput
                     Layout.fillWidth: true
                     placeholderText: watchWs.commentable ? "コメントを入力..." : "接続中..."
-                    enabled: watchWs.commentable
+                    enabled: root.postInputVisible && watchWs.commentable
                     color: optionsBar.postColor !== "" && optionsBar.postColor !== "black"
                            ? Colors.mailColor(optionsBar.postColor) : root.clr.text
                     placeholderTextColor: root.clr.sub
@@ -221,19 +270,35 @@ Page {
 
                 // オプション切り替えボタン (選択中は色付き)
                 ToolButton {
-                    text: "⚙"
-                    font.pixelSize: 15
+                    id: styleBtn
+                    readonly property bool active: optionsBar.postColor !== "" || optionsBar.postSize !== "" || optionsBar.postPosition !== ""
+                    contentItem: UiIcon {
+                        name: "style"
+                        color: styleBtn.active ? Material.accentColor : root.clr.sub
+                        strokeWidth: 2
+                    }
+                    implicitWidth: 38
+                    implicitHeight: 34
                     Material.foreground: (optionsBar.postColor !== "" || optionsBar.postSize !== "" || optionsBar.postPosition !== "")
                                          ? Material.accentColor : root.clr.sub
+                    ToolTip.visible: pressed
+                    ToolTip.text: "装飾"
                     onClicked: optionsBar.optionsVisible = !optionsBar.optionsVisible
                 }
 
                 ToolButton {
                     id: sendBtn
-                    text: "▶"
-                    font.pixelSize: 16
-                    enabled: watchWs.commentable && commentInput.text.trim().length > 0
+                    contentItem: UiIcon {
+                        name: "send"
+                        color: sendBtn.enabled ? Material.accentColor : root.clr.border
+                        strokeWidth: 2
+                    }
+                    implicitWidth: 38
+                    implicitHeight: 34
+                    enabled: root.postInputVisible && watchWs.commentable && commentInput.text.trim().length > 0
                     Material.foreground: enabled ? Material.accentColor : root.clr.border
+                    ToolTip.visible: pressed
+                    ToolTip.text: "送信"
                     onClicked: {
                         const text = commentInput.text.trim()
                         if (!text) return
@@ -253,7 +318,10 @@ Page {
             visible: height > 0
             color: root.clr.header
 
-            property var sources: channelModel.getSourcesByVideo(root.channelVideo)
+            property var sources: {
+                channelModel.sourceRevision
+                return channelModel.getSourcesByVideo(root.channelVideo)
+            }
 
             ScrollView {
                 anchors.fill: parent
@@ -273,7 +341,7 @@ Page {
                         }
                         Button {
                             property var src: modelData
-                            text: src.label + (src.running ? " ●" : "")
+                            text: src.label + (src.running ? " ON" : "")
                             flat: true
                             highlighted: commentWs.channel === src.key
                             font.pixelSize: 11

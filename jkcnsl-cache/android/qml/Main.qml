@@ -30,6 +30,14 @@ ApplicationWindow {
         function onErrorMessage(text) { window.showError(text) }
     }
 
+    Connections {
+        target: settings
+        function onUserSessionChanged() {
+            if (watchWs.channel.length > 0)
+                watchWs.connectTo(settings.serverUrl, watchWs.channel, settings.userSession)
+        }
+    }
+
     Rectangle {
         id: snackBar
         visible: false
@@ -86,10 +94,13 @@ ApplicationWindow {
                         Layout.fillWidth: true
                     }
 
-                    Label {
-                        text: channelsWs.connected ? "⬤" : "○"
-                        color: channelsWs.connected ? "#4caf50" : "#f44336"
-                        font.pixelSize: 13
+                    Rectangle {
+                        Layout.preferredWidth: 10
+                        Layout.preferredHeight: 10
+                        radius: 5
+                        color: channelsWs.connected ? "#4caf50" : "transparent"
+                        border.color: channelsWs.connected ? "#4caf50" : "#f44336"
+                        border.width: 2
                     }
                 }
             }
@@ -109,12 +120,19 @@ ApplicationWindow {
                     }
                 }
 
-                SchedulePage {}
+                SchedulePage {
+                    id: schedulePage
+                }
 
                 SettingsPage {
                     onApplyServerUrl: {
                         channelsWs.disconnectNow()
                         channelsWs.connectTo(settings.serverUrl)
+                        commentWs.disconnectNow()
+                        watchWs.disconnectNow()
+                        commentModel.clear()
+                        schedulePage.reload()
+                        window.showError("URLを適用しました")
                     }
                     onOpenLoginPage: rootStack.push(loginPageComp)
                 }

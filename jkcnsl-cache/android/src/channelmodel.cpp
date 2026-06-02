@@ -1,6 +1,7 @@
 #include "channelmodel.h"
 #include <QJsonArray>
 #include <QJsonValue>
+#include <algorithm>
 
 ChannelModel::ChannelModel(QObject *parent)
     : QAbstractListModel(parent)
@@ -128,6 +129,10 @@ void ChannelModel::applySnapshot(const QJsonObject &msg) {
         ch.program       = parseProgram(o["program"]);
         for (const auto &sv : o["sources"].toArray())
             ch.sources.append(parseSource(sv.toObject()));
+        if (!o.contains(QStringLiteral("running"))) {
+            ch.running = std::any_of(ch.sources.cbegin(), ch.sources.cend(),
+                [](const ChannelSource &source) { return source.configured && source.running; });
+        }
         m_videoToRow[ch.video] = row++;
         m_channels.append(std::move(ch));
     }
@@ -147,8 +152,16 @@ void ChannelModel::applyStats(const QJsonObject &msg) {
         ch.viewers       = o["viewers"].toInt();
         ch.totalComments = static_cast<qint64>(o["comments"].toDouble());
         ch.lastResNo     = static_cast<qint64>(o["lastResNo"].toDouble());
+        if (o.contains(QStringLiteral("sources"))) {
+            ch.sources.clear();
+            for (const auto &sv : o["sources"].toArray())
+                ch.sources.append(parseSource(sv.toObject()));
+
+            ch.running = std::any_of(ch.sources.cbegin(), ch.sources.cend(),
+                [](const ChannelSource &source) { return source.configured && source.running; });
+        }
         const auto idx = index(row);
-        emit dataChanged(idx, idx, {ForceRole, ViewersRole, CommentsRole, LastResNoRole});
+        emit dataChanged(idx, idx, {ForceRole, ViewersRole, CommentsRole, LastResNoRole, RunningRole, SourcesRole});
     }
 }
 
