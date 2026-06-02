@@ -92,7 +92,20 @@ jobs:
           ANDROID_storePassword: ${{ secrets.ANDROID_STORE_PASSWORD }}
           ANDROID_keyAlias: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_keyPassword: ${{ secrets.ANDROID_KEY_PASSWORD }}
-        run: cmake --build build-android --target apk
+        run: |
+          set +e
+          cmake --build build-android --target apk
+          build_exit=$?
+          set -e
+
+          if [ "$build_exit" -ne 0 ]; then
+            echo "cmake --build exited with ${build_exit}; checking for a Gradle-produced APK."
+          fi
+
+          if [ "$build_exit" -ne 0 ] && ! find build-android -name '*.apk' | grep -q .; then
+            echo "APK build failed and no APK was produced." >&2
+            exit "$build_exit"
+          fi
 
       - name: Prepare APK artifact
         env:
