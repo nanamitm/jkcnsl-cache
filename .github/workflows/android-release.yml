@@ -12,10 +12,10 @@ permissions:
 jobs:
   windows:
     name: Build Windows x64 package
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     env:
-      QT_VERSION: '6.11.1'
+      QT_VERSION: '6.10.1'
 
     steps:
       - name: Checkout
