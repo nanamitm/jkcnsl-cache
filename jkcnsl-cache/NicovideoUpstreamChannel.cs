@@ -121,7 +121,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
             var result = await _searchService.WaitForNextResultAsync(_channel, _failedNonOfficialLvId, ct);
             if (result == null)
             {
-                _logger.LogWarning("[{Channel}] 配信が見つかりません", _channel);
+                _logger.LogWarning("[{Channel}] 配信中または配信予定の枠が見つかりません", _channel);
                 return;
             }
             if (result.IsReserved)
