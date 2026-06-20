@@ -364,7 +364,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         {
                             entryStream.Dispose();
                             entryStream = null;
-                            _logger.LogInformation("[{Channel}] entry ストリーム終端: attempt={Attempt} activeLvId={LvId}",
+                            _logger.LogDebug("[{Channel}] entry ストリーム終端: attempt={Attempt} activeLvId={LvId}",
                                 _channel, CurrentConnectionAttemptId, state.ActiveLvId);
                         }
                         else
@@ -412,7 +412,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         if (ms == null)
                         {
                             segmentStream.Dispose();
-                            _logger.LogInformation("[{Channel}] segment ストリーム終端: attempt={Attempt} activeLvId={LvId}",
+                            _logger.LogDebug("[{Channel}] segment ストリーム終端: attempt={Attempt} activeLvId={LvId}",
                                 _channel, CurrentConnectionAttemptId, state.ActiveLvId);
                             // プリフェッチを引き継ぐ
                             segmentTask = prefetchTask;
