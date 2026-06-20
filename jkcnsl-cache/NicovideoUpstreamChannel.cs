@@ -585,8 +585,11 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         using var doc = JsonDocument.Parse(buf.AsMemory(0, count));
         if (!doc.RootElement.TryGetProperty("type", out var typeProp)) return;
         var messageType = typeProp.GetString();
-        _logger.LogDebug("[{Channel}] watch メッセージ受信: attempt={Attempt} type={Type} activeLvId={LvId}",
-            _channel, CurrentConnectionAttemptId, messageType ?? "(null)", state.ActiveLvId);
+        if (messageType is "messageServer" or "disconnect" or "reconnect")
+        {
+            _logger.LogDebug("[{Channel}] watch メッセージ受信: attempt={Attempt} type={Type} activeLvId={LvId}",
+                _channel, CurrentConnectionAttemptId, messageType ?? "(null)", state.ActiveLvId);
+        }
 
         switch (messageType)
         {
