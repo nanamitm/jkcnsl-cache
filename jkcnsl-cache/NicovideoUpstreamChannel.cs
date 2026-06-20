@@ -21,6 +21,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
     private DateTimeOffset? _scheduledStartUtc;
     private volatile string? _failedNonOfficialLvId;
     private volatile bool _isRetryWaiting;
+    private volatile string _fallbackReason = "initial";
     private long _upstreamVposBaseTicks; // 0 = 未取得、正値 = UTC Ticks
     private readonly TimeSpan _streamIdleTimeout;
     private static readonly TimeSpan NonOfficialCandidateRetryInterval = TimeSpan.FromSeconds(10);
@@ -108,16 +109,25 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
     {
+        _logger.LogInformation(
+            "[{Channel}] nicovideo接続処理を開始: attempt={Attempt} officialTarget={OfficialTarget} failedNonOfficialLvId={FailedLvId}",
+            _channel, CurrentConnectionAttemptId, _lvId, _failedNonOfficialLvId ?? "(null)");
         // 1. 公式ch で WebSocket URL を取得
         var activeLvId = _lvId;
+        if (!string.IsNullOrEmpty(_lvId))
+            _logger.LogInformation("[{Channel}] 公式 watch 取得開始: attempt={Attempt} target={Target}",
+                _channel, CurrentConnectionAttemptId, _lvId);
         var webSocketUrl = !string.IsNullOrEmpty(_lvId)
             ? await ScrapeWatchPageAsync(_lvId, ct)
             : null;
+        if (webSocketUrl != null)
+            _logger.LogInformation("[{Channel}] 公式 watch 取得成功: attempt={Attempt} target={Target}",
+                _channel, CurrentConnectionAttemptId, _lvId);
 
         // 2. 非公式チャンネル: 検索サービスから次のバッチ結果を受け取る
         if (webSocketUrl == null && _searchService != null)
         {
-            SetLocalFallbackActive(true);
+            SetFallbackState(true, "waiting_non_official_search_result");
             var result = await _searchService.WaitForNextResultAsync(_channel, _failedNonOfficialLvId, ct);
             if (result == null)
             {
@@ -196,7 +206,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     _scheduledStartUtc = null;
                     _isScheduled = false;
                     _isRetryWaiting = true;
-                    SetLocalFallbackActive(true);
+                    SetFallbackState(true, "non_official_candidate_retry_exhausted");
                     _logger.LogWarning("[{Channel}] 非公式配信の短時間再検索に失敗。次のバッチまで待機します", _channel);
                     return;
                 }
@@ -209,7 +219,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         if (webSocketUrl == null)
         {
             _isRetryWaiting = true;
-            SetLocalFallbackActive(true);
+            SetFallbackState(true, "watch_page_unavailable");
             _logger.LogWarning("[{Channel}] 配信情報を取得できません。{Minutes}分後に再確認します",
                 _channel, Math.Round(_noStreamCheckInterval.TotalMinutes, 1));
             await Task.Delay(_noStreamCheckInterval, ct);
@@ -230,9 +240,12 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         _scheduledStartUtc = null;
         _isScheduled = false;
         _isRetryWaiting = false;
-        SetLocalFallbackActive(false);
-        _logger.LogInformation("[{Channel}] nicovideo WebSocketへ接続: {Url}", _channel, webSocketUrl);
+        SetFallbackState(false, "watch_websocket_connecting");
+        _logger.LogInformation("[{Channel}] nicovideo WebSocket接続開始: attempt={Attempt} activeLvId={LvId} url={Url}",
+            _channel, CurrentConnectionAttemptId, activeLvId, webSocketUrl);
         await watchWs.ConnectAsync(new Uri(webSocketUrl), ct);
+        _logger.LogInformation("[{Channel}] nicovideo WebSocket接続完了: attempt={Attempt} activeLvId={LvId}",
+            _channel, CurrentConnectionAttemptId, activeLvId);
         await SendTextAsync(watchWs, """{"type":"startWatching","data":{"reconnect":false}}""", ct);
 
         var state = new NicovideoState { ActiveLvId = activeLvId };
@@ -255,6 +268,11 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         Task? keepSeatTask = null;
         Task watchdogTask = Task.Delay(StreamWatchdogInterval, ct);
         var lastProgressUtc = DateTimeOffset.UtcNow;
+        DateTimeOffset? lastWatchMessageUtc = null;
+        DateTimeOffset? lastEntryChunkUtc = null;
+        DateTimeOffset? lastSegmentChunkUtc = null;
+        DateTimeOffset? lastCommentUtc = null;
+        var firstCommentLogged = false;
 
 
         try
@@ -291,8 +309,17 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     var idleFor = DateTimeOffset.UtcNow - lastProgressUtc;
                     if (idleFor > _streamIdleTimeout)
                     {
-                        _logger.LogWarning("[{Channel}] nicovideo ストリームが無通信のため再接続します: idleSeconds={IdleSeconds}",
-                            _channel, (int)idleFor.TotalSeconds);
+                        _logger.LogWarning(
+                            "[{Channel}] nicovideo ストリームが無通信のため再接続します: attempt={Attempt} idleSeconds={IdleSeconds} lastWatchAgo={LastWatchAgo} lastEntryAgo={LastEntryAgo} lastSegmentAgo={LastSegmentAgo} lastCommentAgo={LastCommentAgo} viewUriReady={ViewUriReady} keepSeatIntervalSec={KeepSeatIntervalSec}",
+                            _channel,
+                            CurrentConnectionAttemptId,
+                            (int)idleFor.TotalSeconds,
+                            FormatAgeSeconds(lastWatchMessageUtc),
+                            FormatAgeSeconds(lastEntryChunkUtc),
+                            FormatAgeSeconds(lastSegmentChunkUtc),
+                            FormatAgeSeconds(lastCommentUtc),
+                            state.ViewUri != null,
+                            state.KeepSeatIntervalSec);
                         throw new TimeoutException("nicovideo stream idle timeout");
                     }
                     watchdogTask = Task.Delay(StreamWatchdogInterval, ct);
@@ -315,6 +342,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (r.EndOfMessage)
                     {
                         lastProgressUtc = DateTimeOffset.UtcNow;
+                        lastWatchMessageUtc = lastProgressUtc;
                         await HandleWatchMessageAsync(watchWs, watchBuf, watchCount, state, ct);
                         watchCount = 0;
                     }
@@ -336,10 +364,13 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         {
                             entryStream.Dispose();
                             entryStream = null;
+                            _logger.LogInformation("[{Channel}] entry ストリーム終端: attempt={Attempt} activeLvId={LvId}",
+                                _channel, CurrentConnectionAttemptId, state.ActiveLvId);
                         }
                         else
                         {
                             lastProgressUtc = DateTimeOffset.UtcNow;
+                            lastEntryChunkUtc = lastProgressUtc;
                             var chunkedEntry = ProtoBuf.Serializer.Deserialize<ChunkedEntry>(ms);
                             if (chunkedEntry.next != null)
                                 state.NextAt = chunkedEntry.next.at.ToString();
@@ -370,6 +401,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (segmentStream == null)
                     {
                         segmentStream = await (Task<HttpStreamLease>)segmentTask;
+                        _logger.LogInformation("[{Channel}] segment ストリーム接続完了: attempt={Attempt} activeLvId={LvId}",
+                            _channel, CurrentConnectionAttemptId, state.ActiveLvId);
                         segmentTask = ReadProtoBufChunkAsync(segmentStream.Stream, msSegment, readBufSegment, ct);
                     }
                     else
@@ -379,6 +412,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         if (ms == null)
                         {
                             segmentStream.Dispose();
+                            _logger.LogInformation("[{Channel}] segment ストリーム終端: attempt={Attempt} activeLvId={LvId}",
+                                _channel, CurrentConnectionAttemptId, state.ActiveLvId);
                             // プリフェッチを引き継ぐ
                             segmentTask = prefetchTask;
                             segmentStream = prefetchStream;
@@ -393,6 +428,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         else
                         {
                             lastProgressUtc = DateTimeOffset.UtcNow;
+                            lastSegmentChunkUtc = lastProgressUtc;
                             chunkedMessage = ProtoBuf.Serializer.Deserialize<ChunkedMessage>(ms);
                             segmentTask = ReadProtoBufChunkAsync(segmentStream.Stream, msSegment, readBufSegment, ct);
                         }
@@ -403,6 +439,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (prefetchStream == null)
                     {
                         prefetchStream = await (Task<HttpStreamLease>)prefetchTask;
+                        _logger.LogDebug("[{Channel}] prefetch ストリーム接続完了: attempt={Attempt} activeLvId={LvId}",
+                            _channel, CurrentConnectionAttemptId, state.ActiveLvId);
                         prefetchTask = ReadProtoBufChunkAsync(prefetchStream.Stream, msPrefetch, readBufPrefetch, ct);
                     }
                     else if (await (Task<MemoryStream?>)prefetchTask == null)
@@ -424,6 +462,14 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                 {
                     var at = chunkedMessage.meta.at.Value.ToUniversalTime() - DateTime.UnixEpoch;
                     var json = BuildChatJson(state.ThreadId, chunkedMessage.message.chat, at);
+                    lastCommentUtc = DateTimeOffset.UtcNow;
+                    if (!firstCommentLogged)
+                    {
+                        firstCommentLogged = true;
+                        _logger.LogInformation(
+                            "[{Channel}] 公式コメント受信開始: attempt={Attempt} activeLvId={LvId} threadId={ThreadId} firstNo={No}",
+                            _channel, CurrentConnectionAttemptId, state.ActiveLvId, state.ThreadId, chunkedMessage.message.chat.no);
+                    }
                     RecordComment((long)chunkedMessage.message.chat.no);
                     await BroadcastAsync(json);
                 }
@@ -439,11 +485,14 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         }
         finally
         {
+            _logger.LogInformation(
+                "[{Channel}] nicovideo接続処理を終了: attempt={Attempt} activeLvId={LvId} retryWaiting={RetryWaiting} fallback={Fallback} firstCommentReceived={FirstCommentReceived}",
+                _channel, CurrentConnectionAttemptId, activeLvId, _isRetryWaiting, IsLocalFallbackActive, firstCommentLogged);
             _currentLvId = null;
             _scheduledLvId = null;
             _scheduledStartUtc = null;
             _isScheduled = false;
-            if (!_isRetryWaiting) SetLocalFallbackActive(true);
+            if (!_isRetryWaiting) SetFallbackState(true, "watch_session_ended");
             prefetchStream?.Dispose();
             segmentStream?.Dispose();
             entryStream?.Dispose();
@@ -535,8 +584,11 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
     {
         using var doc = JsonDocument.Parse(buf.AsMemory(0, count));
         if (!doc.RootElement.TryGetProperty("type", out var typeProp)) return;
+        var messageType = typeProp.GetString();
+        _logger.LogDebug("[{Channel}] watch メッセージ受信: attempt={Attempt} type={Type} activeLvId={LvId}",
+            _channel, CurrentConnectionAttemptId, messageType ?? "(null)", state.ActiveLvId);
 
-        switch (typeProp.GetString())
+        switch (messageType)
         {
             case "ping":
                 await SendTextAsync(watchWs, """{"type":"pong"}""", ct);
@@ -563,7 +615,9 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                     if (msData.TryGetProperty("viewUri", out var vu) && state.ViewUri == null)
                     {
                         state.ViewUri = vu.GetString();
-                        _logger.LogInformation("[{Channel}] messageServer受信: {Uri}", _channel, state.ViewUri);
+                        _logger.LogInformation(
+                            "[{Channel}] messageServer受信: attempt={Attempt} activeLvId={LvId} viewUri={Uri}",
+                            _channel, CurrentConnectionAttemptId, state.ActiveLvId, state.ViewUri);
                         ResetReconnectBackoff();
                     }
                     if (msData.TryGetProperty("vposBaseTime", out var vbt) &&
@@ -574,16 +628,32 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
                         state.ThreadId = $"{_channel}_{(long)vposBaseUnix.TotalSeconds}";
                         Interlocked.Exchange(ref _upstreamVposBaseTicks,
                             new DateTimeOffset(vposBaseUtc, TimeSpan.Zero).UtcTicks);
+                        _logger.LogInformation(
+                            "[{Channel}] vposBaseTime受信: attempt={Attempt} activeLvId={LvId} threadId={ThreadId} vposBaseTimeUtc={VposBaseTimeUtc:o}",
+                            _channel, CurrentConnectionAttemptId, state.ActiveLvId, state.ThreadId, vposBaseUtc);
                     }
                 }
                 break;
 
             case "disconnect":
             case "reconnect":
+                _logger.LogWarning("[{Channel}] watch サーバーから{Type}を受信したため切断します: attempt={Attempt} activeLvId={LvId}",
+                    _channel, messageType, CurrentConnectionAttemptId, state.ActiveLvId);
                 await watchWs.CloseAsync(WebSocketCloseStatus.NormalClosure, "", CancellationToken.None);
                 break;
         }
     }
+
+    protected override string GetFallbackChangeReason() => _fallbackReason;
+
+    private void SetFallbackState(bool active, string reason)
+    {
+        _fallbackReason = reason;
+        SetLocalFallbackActive(active);
+    }
+
+    private static object FormatAgeSeconds(DateTimeOffset? timestamp) =>
+        timestamp.HasValue ? Math.Max(0, (int)(DateTimeOffset.UtcNow - timestamp.Value).TotalSeconds) : -1;
 
     private static byte[] BuildChatJson(string threadId, Chat chat, TimeSpan at)
     {

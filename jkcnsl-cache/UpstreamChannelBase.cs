@@ -23,6 +23,8 @@ public abstract class UpstreamChannelBase
     private long _fallbackVposBaseTicks = DateTimeOffset.UtcNow.UtcTicks;
     private volatile bool _localFallbackActive = false;
     private int _reconnectDelaySec = 10;
+    private long _connectionAttemptSeq = 0;
+    private long _currentConnectionAttemptId = 0;
     private readonly Queue<long> _recentMs = new();
     private readonly object _statsLock = new();
 
@@ -46,6 +48,7 @@ public abstract class UpstreamChannelBase
     // NicoNico の watch ページスクレイピングに使う ID（ch??? / lv??? など）
     public virtual string? WatchTarget => null;
     public virtual string GetDownstreamThreadId(string requestedChannel) => NormalizeJkThreadId(requestedChannel);
+    protected long CurrentConnectionAttemptId => Interlocked.Read(ref _currentConnectionAttemptId);
 
     public virtual Task<ReadOnlyMemory<byte>> PostCommentAsync(ReadOnlyMemory<byte> json, CancellationToken ct)
         => Task.FromResult<ReadOnlyMemory<byte>>(
@@ -83,9 +86,24 @@ public abstract class UpstreamChannelBase
 
     protected void SetLocalFallbackActive(bool active)
     {
-        if (active && !_localFallbackActive)
+        var previous = _localFallbackActive;
+        if (active && !previous)
             Interlocked.Exchange(ref _fallbackVposBaseTicks, DateTimeOffset.UtcNow.UtcTicks);
         _localFallbackActive = active;
+        if (previous != active)
+        {
+            _logger.LogInformation(
+                "[{Channel}] fallback状態変更: from={From} to={To} reason={Reason} attempt={Attempt} status={Status} currentTarget={CurrentTarget} clients={ClientCount} lastResNo={LastResNo}",
+                _channel,
+                previous,
+                active,
+                GetFallbackChangeReason(),
+                CurrentConnectionAttemptId,
+                Status,
+                CurrentTarget ?? "(null)",
+                ClientCount,
+                LastResNo);
+        }
     }
 
     protected void ResetReconnectBackoff() =>
@@ -123,6 +141,9 @@ public abstract class UpstreamChannelBase
             if (string.IsNullOrEmpty(userId))
                 userId = $"local-{Random.Shared.NextInt64(0x100000000L):x8}";
             var chatJson = CreateLocalChatJson(no, vpos, now, userId, mail, text);
+            _logger.LogDebug(
+                "[{Channel}] fallbackコメント投稿: attempt={Attempt} no={No} vpos={Vpos} userId={UserId} textLength={TextLength}",
+                _channel, CurrentConnectionAttemptId, no, vpos, userId, text.Length);
             RecordComment(no);
             _ = BroadcastAsync(chatJson);
             return Task.FromResult<ReadOnlyMemory<byte>>(Encoding.UTF8.GetBytes(
@@ -322,9 +343,26 @@ public abstract class UpstreamChannelBase
         ResetReconnectBackoff();
         while (!ct.IsCancellationRequested)
         {
+            var attemptId = Interlocked.Increment(ref _connectionAttemptSeq);
+            Interlocked.Exchange(ref _currentConnectionAttemptId, attemptId);
+            _logger.LogInformation(
+                "[{Channel}] 上流接続試行を開始: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget} watchTarget={WatchTarget}",
+                _channel,
+                attemptId,
+                IsLocalFallbackActive,
+                Status,
+                CurrentTarget ?? "(null)",
+                WatchTarget ?? "(null)");
             try
             {
                 await ConnectAndReceiveAsync(ct);
+                _logger.LogInformation(
+                    "[{Channel}] 上流接続試行が終了: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget}",
+                    _channel,
+                    attemptId,
+                    IsLocalFallbackActive,
+                    Status,
+                    CurrentTarget ?? "(null)");
                 // 正常切断はすぐ再接続（放送終了→新放送など）、バックオフもリセット
                 ResetReconnectBackoff();
                 try { await Task.Delay(5_000, ct); }
@@ -337,7 +375,9 @@ public abstract class UpstreamChannelBase
                 // 403 は「接続拒否」のため長時間待機（1時間）
                 if (ex.Message.Contains("403"))
                 {
-                    _logger.LogWarning("[{Channel}] 上流から403が返りました。1時間後に再試行します", _channel);
+                    _logger.LogWarning(
+                        "[{Channel}] 上流から403が返りました。1時間後に再試行します: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget}",
+                        _channel, attemptId, IsLocalFallbackActive, Status, CurrentTarget ?? "(null)");
                     try { await Task.Delay(TimeSpan.FromHours(1), ct); }
                     catch (OperationCanceledException) { break; }
                     continue;
@@ -346,7 +386,15 @@ public abstract class UpstreamChannelBase
                 var delaySec = Volatile.Read(ref _reconnectDelaySec);
                 var jitterSec = Random.Shared.Next(-delaySec / 2, delaySec / 2);
                 var actualDelay = Math.Max(5, delaySec + jitterSec);
-                _logger.LogWarning(ex, "[{Channel}] 上流切断。{Delay}秒後に再接続します", _channel, actualDelay);
+                _logger.LogWarning(
+                    ex,
+                    "[{Channel}] 上流切断。{Delay}秒後に再接続します: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget}",
+                    _channel,
+                    actualDelay,
+                    attemptId,
+                    IsLocalFallbackActive,
+                    Status,
+                    CurrentTarget ?? "(null)");
                 try { await Task.Delay(actualDelay * 1000, ct); }
                 catch (OperationCanceledException) { break; }
                 // 最大5分まで指数バックオフ
@@ -354,6 +402,8 @@ public abstract class UpstreamChannelBase
             }
         }
     }
+
+    protected virtual string GetFallbackChangeReason() => "state_transition";
 
     protected abstract Task ConnectAndReceiveAsync(CancellationToken ct);
 
