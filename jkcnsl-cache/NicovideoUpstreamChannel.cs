@@ -109,9 +109,22 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
     {
-        _logger.LogInformation(
-            "[{Channel}] nicovideo接続処理を開始: attempt={Attempt} officialTarget={OfficialTarget} failedNonOfficialLvId={FailedLvId}",
-            _channel, CurrentConnectionAttemptId, _lvId, _failedNonOfficialLvId ?? "(null)");
+        var logRepeatedNonOfficialWait = string.IsNullOrEmpty(_lvId) &&
+            _searchService != null &&
+            IsLocalFallbackActive &&
+            _failedNonOfficialLvId == null;
+        if (logRepeatedNonOfficialWait)
+        {
+            _logger.LogDebug(
+                "[{Channel}] nicovideo接続処理を開始: attempt={Attempt} officialTarget={OfficialTarget} failedNonOfficialLvId={FailedLvId}",
+                _channel, CurrentConnectionAttemptId, _lvId, _failedNonOfficialLvId ?? "(null)");
+        }
+        else
+        {
+            _logger.LogInformation(
+                "[{Channel}] nicovideo接続処理を開始: attempt={Attempt} officialTarget={OfficialTarget} failedNonOfficialLvId={FailedLvId}",
+                _channel, CurrentConnectionAttemptId, _lvId, _failedNonOfficialLvId ?? "(null)");
+        }
         // 1. 公式ch で WebSocket URL を取得
         var activeLvId = _lvId;
         if (!string.IsNullOrEmpty(_lvId))
