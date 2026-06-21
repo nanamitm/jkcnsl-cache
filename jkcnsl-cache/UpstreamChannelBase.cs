@@ -345,24 +345,53 @@ public abstract class UpstreamChannelBase
         {
             var attemptId = Interlocked.Increment(ref _connectionAttemptSeq);
             Interlocked.Exchange(ref _currentConnectionAttemptId, attemptId);
-            _logger.LogInformation(
-                "[{Channel}] 上流接続試行を開始: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget} watchTarget={WatchTarget}",
-                _channel,
-                attemptId,
-                IsLocalFallbackActive,
-                Status,
-                CurrentTarget ?? "(null)",
-                WatchTarget ?? "(null)");
-            try
+            var logRepeatedFallbackAttempt = IsLocalFallbackActive &&
+                (Status == "fallbackLocal" || Status == "retryWaiting");
+            if (logRepeatedFallbackAttempt)
             {
-                await ConnectAndReceiveAsync(ct);
-                _logger.LogInformation(
-                    "[{Channel}] 上流接続試行が終了: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget}",
+                _logger.LogDebug(
+                    "[{Channel}] 上流接続試行を開始: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget} watchTarget={WatchTarget}",
                     _channel,
                     attemptId,
                     IsLocalFallbackActive,
                     Status,
-                    CurrentTarget ?? "(null)");
+                    CurrentTarget ?? "(null)",
+                    WatchTarget ?? "(null)");
+            }
+            else
+            {
+                _logger.LogInformation(
+                    "[{Channel}] 上流接続試行を開始: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget} watchTarget={WatchTarget}",
+                    _channel,
+                    attemptId,
+                    IsLocalFallbackActive,
+                    Status,
+                    CurrentTarget ?? "(null)",
+                    WatchTarget ?? "(null)");
+            }
+            try
+            {
+                await ConnectAndReceiveAsync(ct);
+                if (logRepeatedFallbackAttempt)
+                {
+                    _logger.LogDebug(
+                        "[{Channel}] 上流接続試行が終了: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget}",
+                        _channel,
+                        attemptId,
+                        IsLocalFallbackActive,
+                        Status,
+                        CurrentTarget ?? "(null)");
+                }
+                else
+                {
+                    _logger.LogInformation(
+                        "[{Channel}] 上流接続試行が終了: attempt={Attempt} fallback={Fallback} status={Status} currentTarget={CurrentTarget}",
+                        _channel,
+                        attemptId,
+                        IsLocalFallbackActive,
+                        Status,
+                        CurrentTarget ?? "(null)");
+                }
                 // 正常切断はすぐ再接続（放送終了→新放送など）、バックオフもリセット
                 ResetReconnectBackoff();
                 try { await Task.Delay(5_000, ct); }
