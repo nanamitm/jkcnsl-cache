@@ -109,11 +109,9 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
     {
-        var logRepeatedNonOfficialWait = string.IsNullOrEmpty(_lvId) &&
-            _searchService != null &&
-            IsLocalFallbackActive &&
-            _failedNonOfficialLvId == null;
-        if (logRepeatedNonOfficialWait)
+        var logSearchWaitAsDebug = string.IsNullOrEmpty(_lvId) &&
+            _searchService != null;
+        if (logSearchWaitAsDebug)
         {
             _logger.LogDebug(
                 "[{Channel}] nicovideo接続処理を開始: attempt={Attempt} officialTarget={OfficialTarget} failedNonOfficialLvId={FailedLvId}",
