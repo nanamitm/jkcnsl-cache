@@ -299,6 +299,17 @@ public class ChannelManager
         }
     }
 
+    // watchdog 用: 監視中チャンネルのうち、ローカル待避が一定時間続いているものを検出するためのスナップショット
+    public IReadOnlyList<(string Channel, string Status, DateTimeOffset? FallbackSinceUtc)> GetMonitoredChannelFallbackStates() =>
+        _channels
+            .Where(kv => kv.Value.IsMonitored)
+            .Select(kv => (kv.Key, kv.Value.Status, kv.Value.LocalFallbackSinceUtc))
+            .ToArray();
+
+    // watchdog 用: fallbackLocal に固まって復帰しないチャンネルを強制再起動する
+    public Task RestartChannelAsync(string channel) =>
+        _channels.TryGetValue(channel, out var ch) ? ch.RestartAsync() : Task.CompletedTask;
+
     public void StartMonitoring(string channel)
     {
         var canonical = ResolveChannel(channel);

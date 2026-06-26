@@ -17,13 +17,42 @@ public class ChannelMonitorService : IHostedService
         _config = config;
         _searchService = searchService;
         _logger = logger;
+        _fallbackStuckThreshold = TimeSpan.FromMinutes(
+            Math.Max(1, config.GetValue<int>("CacheServer:FallbackStuckMinutes", 10)));
     }
+
+    private static readonly TimeSpan FallbackWatchdogInterval = TimeSpan.FromMinutes(1);
+    private readonly TimeSpan _fallbackStuckThreshold;
 
     public Task StartAsync(CancellationToken ct)
     {
         _ = RunWithRestartAsync("SearchLoop", () => _searchService.RunAsync(ct), ct);
         _ = RunWithRestartAsync("ChannelStartup", () => StartChannelsAsync(ct), ct);
+        _ = RunWithRestartAsync("FallbackWatchdog", () => RunFallbackWatchdogAsync(ct), ct);
         return Task.CompletedTask;
+    }
+
+    // RunLoopAsync が（バグ等で）静かに停止し、fallbackLocal（公式ローカル待機中）から
+    // 復帰しなくなったチャンネルを検出し、強制的に再起動する応急処置。
+    private async Task RunFallbackWatchdogAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try { await Task.Delay(FallbackWatchdogInterval, ct); }
+            catch (OperationCanceledException) { break; }
+
+            var now = DateTimeOffset.UtcNow;
+            foreach (var (channel, status, fallbackSinceUtc) in _channelManager.GetMonitoredChannelFallbackStates())
+            {
+                if (status != "fallbackLocal" || fallbackSinceUtc is not { } since) continue;
+                if (now - since < _fallbackStuckThreshold) continue;
+
+                _logger.LogWarning(
+                    "[ChannelMonitor] [{Channel}] fallbackLocalが{Minutes}分以上継続しているため再起動します",
+                    channel, (int)(now - since).TotalMinutes);
+                await _channelManager.RestartChannelAsync(channel);
+            }
+        }
     }
 
     private async Task RunWithRestartAsync(string name, Func<Task> action, CancellationToken ct)

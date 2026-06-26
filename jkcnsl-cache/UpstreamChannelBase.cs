@@ -44,6 +44,9 @@ public abstract class UpstreamChannelBase
         }
     }
     public bool IsLocalFallbackActive => _localFallbackActive;
+    // ローカル待避が現在の状態に入った時刻（待避中でなければ null）。watchdog の長時間待避検出に使う。
+    public DateTimeOffset? LocalFallbackSinceUtc =>
+        _localFallbackActive ? new DateTimeOffset(Interlocked.Read(ref _fallbackVposBaseTicks), TimeSpan.Zero) : null;
     public virtual string Status => IsRunning ? "running" : "idle";
     public virtual string? StatusText => null;
     // NicoNico の watch ページスクレイピングに使う ID（ch??? / lv??? など）
@@ -166,6 +169,18 @@ public abstract class UpstreamChannelBase
             _runTask = RunLoopAsync(_cts.Token);
             _running = true;
         }
+        // RunLoopAsync は fire-and-forget のため、内部の try/catch をすり抜けた
+        // 想定外の例外（フィルタ内の例外など）が起きてもログに残し、UnobservedTaskException を防ぐ。
+        _runTask.ContinueWith(t =>
+            _logger.LogCritical(t.Exception, "[{Channel}] 上流接続ループが想定外の例外で停止しました", _channel),
+            TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously);
+    }
+
+    // watchdog 用: 実行中のループを止めて再起動する。fallbackLocal に固まって復帰しないチャンネルの応急処置。
+    public async Task RestartAsync()
+    {
+        await StopAsync();
+        EnsureRunning();
     }
 
     // コメントクライアントが何も送ってこない場合の最大待ち時間
@@ -343,6 +358,25 @@ public abstract class UpstreamChannelBase
         Encoding.UTF8.GetBytes("{\"type\":\"error\",\"data\":{\"code\":\"" + code + "\"}}");
 
     private async Task RunLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            await RunLoopCoreAsync(ct);
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            // ここに到達するのは内側の catch(Exception) で想定していない例外（ログ処理中の例外等）。
+            // 原因調査のため記録し、_running を確実に false に戻して EnsureRunning() での再起動を可能にする。
+            _logger.LogCritical(ex, "[{Channel}] 上流接続ループが予期せず停止しました", _channel);
+        }
+        finally
+        {
+            lock (this) { _running = false; }
+        }
+    }
+
+    private async Task RunLoopCoreAsync(CancellationToken ct)
     {
         ResetReconnectBackoff();
         while (!ct.IsCancellationRequested)
