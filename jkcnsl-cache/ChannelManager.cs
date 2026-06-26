@@ -17,6 +17,7 @@ public class ChannelManager
     private readonly LocalStreamConnectionLimiter _localStreamLimiter;
     private readonly ChannelCatalog _channelCatalog;
     private readonly MetricsService _metrics;
+    private readonly CommentStorageService _commentStorage;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
 
     private static readonly HttpClient _watchScrapeClient = CreateWatchScrapeClient();
@@ -35,7 +36,7 @@ public class ChannelManager
 
     public ChannelManager(IConfiguration config, ILogger<ChannelManager> logger, ILoggerFactory loggerFactory,
         NicovideoSearchService searchService, LocalStreamConnectionLimiter localStreamLimiter,
-        ChannelCatalog channelCatalog, MetricsService metrics)
+        ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage)
     {
         _config = config;
         _logger = logger;
@@ -44,6 +45,7 @@ public class ChannelManager
         _localStreamLimiter = localStreamLimiter;
         _channelCatalog = channelCatalog;
         _metrics = metrics;
+        _commentStorage = commentStorage;
     }
 
     public DateTimeOffset? GetChannelScheduled(string channel) =>
@@ -403,25 +405,31 @@ public class ChannelManager
     private UpstreamChannelBase GetOrCreateChannel(string channel, string upstreamValue) =>
         _channels.GetOrAdd(channel, _ =>
         {
+            UpstreamChannelBase ch;
             if (IsLocalStreamValue(upstreamValue))
             {
-                return new LocalStreamChannel(channel, _config,
+                ch = new LocalStreamChannel(channel, _config,
                     _loggerFactory.CreateLogger<LocalStreamChannel>(),
                     _localStreamLimiter,
                     _metrics);
             }
-            if (upstreamValue.StartsWith("nicovideo:", StringComparison.Ordinal))
+            else if (upstreamValue.StartsWith("nicovideo:", StringComparison.Ordinal))
             {
                 var lvId = upstreamValue["nicovideo:".Length..];
-                return new NicovideoUpstreamChannel(channel, lvId, _config,
+                ch = new NicovideoUpstreamChannel(channel, lvId, _config,
                     _loggerFactory.CreateLogger<NicovideoUpstreamChannel>(),
                     TimeSpan.FromMinutes(_config.GetValue<int>("CacheServer:NoStreamCheckIntervalMinutes", 30)),
                     _metrics,
                     string.IsNullOrEmpty(lvId) ? _searchService : null);
             }
-            return new UpstreamChannel(channel, upstreamValue, _config,
-                _loggerFactory.CreateLogger<UpstreamChannel>(),
-                _metrics);
+            else
+            {
+                ch = new UpstreamChannel(channel, upstreamValue, _config,
+                    _loggerFactory.CreateLogger<UpstreamChannel>(),
+                    _metrics);
+            }
+            ch.CommentStorage = _commentStorage;
+            return ch;
         });
 
     private static bool IsLocalStreamValue(string? upstreamValue) =>

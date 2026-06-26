@@ -20,9 +20,12 @@ builder.Services.AddSingleton<ChannelsStreamBroadcaster>();
 builder.Services.AddSingleton<LocalStreamConnectionLimiter>();
 builder.Services.AddSingleton<MetricsService>();
 builder.Services.AddSingleton<ProgramInfoService>();
+builder.Services.AddSingleton<CommentStorageService>();
+builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
 builder.Services.AddHostedService<ChannelMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MetricsService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProgramInfoService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<CommentStorageService>());
 builder.Services.AddOutputCache();
 
 var bindAddress = builder.Configuration.GetValue<string>("CacheServer:BindAddress") ?? "0.0.0.0";
@@ -42,6 +45,7 @@ builder.WebHost.ConfigureKestrel((_, options) =>
 var startedAt = DateTimeOffset.UtcNow;
 
 var app = builder.Build();
+app.UseResponseCompression();
 app.UseWebSockets(new WebSocketOptions { KeepAliveInterval = TimeSpan.FromSeconds(30) });
 app.UseWhen(ctx => mainPort == statusPort || ctx.Connection.LocalPort == mainPort, mainApp =>
 {
@@ -142,6 +146,81 @@ StatusOnly(app.MapGet("/api/logs",
 // 管理画面メトリクス API（ステータスポートのみ）
 StatusOnly(app.MapGet("/api/admin/metrics", (MetricsService metrics) =>
     Results.Json(metrics.CreatePayload())));
+
+// コメントエクスポート API（ステータスポートのみ）
+// GET /api/comments/export?date=2026-06-26[&channel=jk1]
+StatusOnly(app.MapGet("/api/comments/export",
+    async (HttpContext ctx, CommentStorageService storage, IHostApplicationLifetime lifetime) =>
+{
+    var dateText = ctx.Request.Query["date"].ToString();
+    var fromText = ctx.Request.Query["from"].ToString();
+    var toText   = ctx.Request.Query["to"].ToString();
+    var channel  = ctx.Request.Query["channel"].ToString();
+    if (string.IsNullOrWhiteSpace(channel)) channel = null;
+
+    DateTimeOffset from, to;
+    if (!string.IsNullOrWhiteSpace(fromText) || !string.IsNullOrWhiteSpace(toText))
+    {
+        if (!DateTimeOffset.TryParse(fromText, null,
+                System.Globalization.DateTimeStyles.RoundtripKind, out from) ||
+            !DateTimeOffset.TryParse(toText, null,
+                System.Globalization.DateTimeStyles.RoundtripKind, out to))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(
+                new { error = "from/to は ISO 8601 形式で指定してください (例: 2026-06-26T10:00:00+09:00)" });
+            return;
+        }
+        if (from >= to)
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(new { error = "from は to より前の時刻を指定してください" });
+            return;
+        }
+        if (to - from > TimeSpan.FromDays(31))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(new { error = "指定できる範囲は最大31日です" });
+            return;
+        }
+    }
+    else if (!string.IsNullOrWhiteSpace(dateText))
+    {
+        if (!DateOnly.TryParseExact(dateText, "yyyy-MM-dd",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.None, out var date))
+        {
+            ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await ctx.Response.WriteAsJsonAsync(new { error = "date は yyyy-MM-dd 形式で指定してください" });
+            return;
+        }
+        from = new DateTimeOffset(date.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
+        to   = from.AddDays(1);
+    }
+    else
+    {
+        ctx.Response.StatusCode = StatusCodes.Status400BadRequest;
+        await ctx.Response.WriteAsJsonAsync(
+            new { error = "date または from/to を指定してください" });
+        return;
+    }
+
+    ctx.Response.ContentType = "application/x-ndjson; charset=utf-8";
+    ctx.Response.Headers.Append("Cache-Control", "no-cache");
+
+    using var cts = CancellationTokenSource.CreateLinkedTokenSource(
+        ctx.RequestAborted, lifetime.ApplicationStopping);
+    try
+    {
+        await foreach (var row in storage.ExportAsync(from, to, channel, cts.Token))
+        {
+            await ctx.Response.WriteAsync(
+                System.Text.Json.JsonSerializer.Serialize(row, CommentRow.JsonOptions) + "\n",
+                cts.Token);
+        }
+    }
+    catch (OperationCanceledException) { }
+}));
 
 // ステータス JSON API（ステータスポートのみ、2秒キャッシュ）
 app.MapGet("/api/status", (ChannelManager mgr, ChannelCatalog channelCatalog) =>

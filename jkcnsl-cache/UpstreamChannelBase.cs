@@ -29,6 +29,7 @@ public abstract class UpstreamChannelBase
     private readonly object _statsLock = new();
 
     public bool IsMonitored { get; set; }
+    public CommentStorageService? CommentStorage { get; set; }
     public bool IsRunning { get { lock (this) { return _running; } } }
     public virtual string? CurrentTarget => null;
     public virtual bool IsScheduled => false;
@@ -231,6 +232,9 @@ public abstract class UpstreamChannelBase
 
     protected async Task BroadcastAsync(ReadOnlyMemory<byte> message)
     {
+        if (CommentStorage != null && message.Span.StartsWith("{\"chat\""u8))
+            CommentStorage.TryEnqueue(_channel, message);
+
         var tasks = _clients.ToArray()
             .Where(kv => kv.Value.State == WebSocketState.Open)
             .Select(async kv =>
