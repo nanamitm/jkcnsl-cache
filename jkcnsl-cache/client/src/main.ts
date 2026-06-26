@@ -8,6 +8,7 @@ import type {
   ProgramInfo,
   ScheduleResponse,
   ScheduleProgram,
+  ScheduleDateRange,
 } from './types'
 import { CommentOverlay } from './overlay'
 
@@ -36,6 +37,9 @@ let viewMode: ViewMode = 'watch'
 let schedule: ScheduleResponse | null = null
 let scheduleLoading = false
 let schedulePendingDate: string | null = null
+let scheduleSelectedDate: string | null = null
+let scheduleDateRange: ScheduleDateRange = { earliestDate: null, latestDate: null }
+let scheduleDateRangeLoaded = false
 const LS_NG          = 'jkcnsl-ng-users'
 const LS_FONT_SCALE  = 'jkcnsl-font-scale'
 const LS_SCROLL_SPEED = 'jkcnsl-scroll-speed'
@@ -449,6 +453,12 @@ app.innerHTML = `
     <section id="schedule-view" hidden>
       <div id="schedule-toolbar">
         <span id="schedule-status"></span>
+        <div id="schedule-date-nav">
+          <button id="schedule-prev-date" type="button" title="前の日">◀</button>
+          <input type="date" id="schedule-date-input" />
+          <button id="schedule-next-date" type="button" title="次の日">▶</button>
+          <button id="schedule-today-btn" type="button">今日</button>
+        </div>
         <button id="schedule-settings-btn" title="番組表設定" type="button">⚙</button>
       </div>
       <div id="schedule-settings-panel" hidden>
@@ -572,6 +582,10 @@ const scheduleChannelSearch = document.getElementById('schedule-channel-search')
 const scheduleChannelOptions = document.getElementById('schedule-channel-options')!
 const scheduleScroll = document.getElementById('schedule-scroll')!
 const scheduleGrid  = document.getElementById('schedule-grid')!
+const schedulePrevDateBtn = document.getElementById('schedule-prev-date') as HTMLButtonElement
+const scheduleNextDateBtn = document.getElementById('schedule-next-date') as HTMLButtonElement
+const scheduleDateInput = document.getElementById('schedule-date-input') as HTMLInputElement
+const scheduleTodayBtn  = document.getElementById('schedule-today-btn') as HTMLButtonElement
 
 chListEl.addEventListener('pointerenter', () => { channelListPointerInside = true })
 chListEl.addEventListener('pointerleave', () => {
@@ -660,6 +674,21 @@ scheduleChannelSearch.addEventListener('input', () => {
   scheduleChannelSearchText = scheduleChannelSearch.value
   renderScheduleChannelOptions()
 })
+schedulePrevDateBtn.addEventListener('click', () => {
+  const base = schedule?.date ?? currentBroadcastDateString()
+  fetchSchedule(addDays(base, -1))
+})
+scheduleNextDateBtn.addEventListener('click', () => {
+  const base = schedule?.date ?? currentBroadcastDateString()
+  fetchSchedule(addDays(base, 1))
+})
+scheduleDateInput.addEventListener('change', () => {
+  if (scheduleDateInput.value) fetchSchedule(scheduleDateInput.value)
+})
+scheduleTodayBtn.addEventListener('click', () => {
+  scheduleSelectedDate = null
+  fetchSchedule()
+})
 
 function setViewMode(mode: ViewMode) {
   viewMode = mode
@@ -668,8 +697,13 @@ function setViewMode(mode: ViewMode) {
   stageEl.hidden = mode !== 'watch'
   commentPanel.hidden = mode !== 'watch'
   scheduleView.hidden = mode !== 'schedule'
-  if (mode === 'schedule' && !schedule && !scheduleLoading)
-    fetchSchedule()
+  if (mode === 'schedule') {
+    if (!scheduleDateRangeLoaded)
+      fetchScheduleDateRange()
+    if (!schedule && !scheduleLoading)
+      fetchSchedule()
+    updateScheduleDateNav()
+  }
 }
 
 opacitySlider.addEventListener('input', () => {
@@ -926,7 +960,7 @@ function handleChannelsStreamMessage(message: ChannelsStreamMessage) {
     applyChannelStats(message.channels)
   } else if (message.type === 'programs') {
     applyChannelPrograms(message.channels)
-    if (viewMode === 'schedule')
+    if (viewMode === 'schedule' && scheduleSelectedDate == null)
       fetchSchedule()
   }
   renderChannelList()
@@ -1218,27 +1252,63 @@ function genreClass(genreCode: string | null | undefined) {
   return /^[0-9a-f]$/i.test(normalized) ? `genre-${normalized}` : 'genre-unknown'
 }
 
-async function fetchSchedule() {
+async function fetchScheduleDateRange() {
+  try {
+    const res = await fetch('/api/programs/schedule/range')
+    if (!res.ok) return
+    scheduleDateRange = await res.json() as ScheduleDateRange
+    scheduleDateRangeLoaded = true
+    updateScheduleDateNav()
+  } catch { /* ignore */ }
+}
+
+async function fetchSchedule(date?: string) {
   if (scheduleLoading) return
   scheduleLoading = true
   if (!schedule)
     scheduleStatus.textContent = '番組表データ取得中…'
   try {
-    const res = await fetch('/api/programs/schedule')
+    const url = date != null
+      ? `/api/programs/schedule?date=${encodeURIComponent(date)}`
+      : '/api/programs/schedule'
+    const res = await fetch(url)
     if (!res.ok) throw new Error(await res.text())
     const next = await res.json() as ScheduleResponse
-    if (next.loaded || !schedule) {
+    if (date != null) {
+      schedule = next
+      scheduleSelectedDate = date
+      schedulePendingDate = null
+    } else if (next.loaded || !schedule) {
       schedule = next
       schedulePendingDate = null
     } else {
       schedulePendingDate = next.date
     }
+    updateScheduleDateNav()
     renderSchedule()
   } catch {
     scheduleStatus.textContent = '取得失敗'
   } finally {
     scheduleLoading = false
   }
+}
+
+function addDays(dateStr: string, days: number): string {
+  const d = new Date(dateStr + 'T12:00:00')
+  d.setDate(d.getDate() + days)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function updateScheduleDateNav() {
+  const currentDate = schedule?.date ?? currentBroadcastDateString()
+  scheduleDateInput.value = currentDate
+  if (scheduleDateRange.earliestDate)
+    scheduleDateInput.min = scheduleDateRange.earliestDate
+  if (scheduleDateRange.latestDate)
+    scheduleDateInput.max = scheduleDateRange.latestDate
+  scheduleTodayBtn.disabled = scheduleSelectedDate == null
+  schedulePrevDateBtn.disabled = !!(scheduleDateRange.earliestDate && currentDate <= scheduleDateRange.earliestDate)
+  scheduleNextDateBtn.disabled = !!(scheduleDateRange.latestDate && currentDate >= scheduleDateRange.latestDate)
 }
 
 function renderSchedule() {
@@ -1316,7 +1386,7 @@ function renderSchedule() {
   if (!schedule.loaded) {
     const waiting = document.createElement('div')
     waiting.className = 'schedule-waiting'
-    waiting.textContent = '番組表データ取得待ち'
+    waiting.textContent = scheduleSelectedDate != null ? '番組表データがありません' : '番組表データ取得待ち'
     scheduleGrid.append(waiting)
   }
 
@@ -1337,7 +1407,9 @@ function formatScheduleStatus() {
   if (schedulePendingDate && schedulePendingDate !== schedule.date)
     return `放送日 ${schedule.date} / 新しい放送日 ${schedulePendingDate} の番組表を待機中`
   if (!schedule.loaded)
-    return `放送日 ${schedule.date} / 番組表データ取得待ち`
+    return scheduleSelectedDate != null
+      ? `放送日 ${schedule.date} / 番組表データなし`
+      : `放送日 ${schedule.date} / 番組表データ取得待ち`
   const updated = schedule.updatedAt
     ? new Date(schedule.updatedAt).toLocaleTimeString('ja-JP', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
     : '-'
@@ -1356,6 +1428,10 @@ function refreshScheduleClock() {
   if (viewMode !== 'schedule') return
   if (!schedule) {
     fetchSchedule()
+    return
+  }
+  if (scheduleSelectedDate != null) {
+    renderSchedule()
     return
   }
   const currentBroadcastDate = currentBroadcastDateString()

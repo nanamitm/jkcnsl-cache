@@ -92,6 +92,11 @@ export interface ScheduleResponse {
   channels: ScheduleChannel[]
 }
 
+export interface ScheduleDateRange {
+  earliestDate: string | null
+  latestDate: string | null
+}
+
 export type ChannelsStreamMessage =
   | {
       type: 'snapshot'

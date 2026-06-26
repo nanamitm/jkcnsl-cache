@@ -19,11 +19,13 @@ builder.Services.AddSingleton<ChannelManager>();
 builder.Services.AddSingleton<ChannelsStreamBroadcaster>();
 builder.Services.AddSingleton<LocalStreamConnectionLimiter>();
 builder.Services.AddSingleton<MetricsService>();
+builder.Services.AddSingleton<EpgStorageService>();
 builder.Services.AddSingleton<ProgramInfoService>();
 builder.Services.AddSingleton<CommentStorageService>();
 builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
 builder.Services.AddHostedService<ChannelMonitorService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MetricsService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<EpgStorageService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProgramInfoService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CommentStorageService>());
 builder.Services.AddOutputCache();
@@ -259,6 +261,25 @@ app.MapGet("/api/status", (ChannelManager mgr, ChannelCatalog channelCatalog) =>
     });
 }).CacheOutput(p => p.Expire(TimeSpan.FromSeconds(2)));
 
+// 番組表保存期間 API（DBに蓄積された最古〜最新の放送日を返す）
+app.MapGet("/api/programs/schedule/range", (EpgStorageService epgStorage, IConfiguration config) =>
+{
+    var (earliest, latest) = epgStorage.GetDateRange();
+    if (earliest == null)
+        return Results.Json(new { earliestDate = (string?)null, latestDate = (string?)null });
+
+    var tzId = config["CacheServer:BroadcastTimeZone"] ?? "Asia/Tokyo";
+    TimeZoneInfo tz;
+    try { tz = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
+    catch { tz = TimeZoneInfo.Local; }
+
+    return Results.Json(new
+    {
+        earliestDate = ToBroadcastDate(earliest.Value, tz).ToString("yyyy-MM-dd"),
+        latestDate   = ToBroadcastDate(latest!.Value,  tz).ToString("yyyy-MM-dd"),
+    });
+});
+
 // 番組表 API（既存EPGキャッシュのみを返す。date は放送日 yyyy-MM-dd）
 app.MapGet("/api/programs/schedule", (HttpContext ctx, ProgramInfoService programInfoService) =>
 {
@@ -361,6 +382,13 @@ app.MapPost("/api/login/mfa", async (HttpContext ctx, ILogger<Program> logger) =
 });
 
 app.Run();
+
+static DateOnly ToBroadcastDate(DateTimeOffset utc, TimeZoneInfo timeZone)
+{
+    var local = TimeZoneInfo.ConvertTime(utc, timeZone);
+    var date = DateOnly.FromDateTime(local.DateTime);
+    return local.Hour < 5 ? date.AddDays(-1) : date;
+}
 
 static ChannelSourceStatus CreateSourceStatus(ChannelManager mgr, string key, string defaultSourceType)
 {

@@ -12,6 +12,7 @@ public sealed class ProgramInfoService : BackgroundService
     private readonly ILogger<ProgramInfoService> _logger;
     private readonly ChannelsStreamBroadcaster _broadcaster;
     private readonly ChannelCatalog _channelCatalog;
+    private readonly EpgStorageService _epgStorage;
     private readonly HttpClient _http;
     private readonly TimeZoneInfo _timeZone;
     private readonly string _nhkArea;
@@ -83,12 +84,14 @@ public sealed class ProgramInfoService : BackgroundService
     };
 
     public ProgramInfoService(IConfiguration config, ILogger<ProgramInfoService> logger,
-        ChannelsStreamBroadcaster broadcaster, ChannelCatalog channelCatalog)
+        ChannelsStreamBroadcaster broadcaster, ChannelCatalog channelCatalog,
+        EpgStorageService epgStorage)
     {
         _config = config;
         _logger = logger;
         _broadcaster = broadcaster;
         _channelCatalog = channelCatalog;
+        _epgStorage = epgStorage;
         _timeZone = ResolveTimeZone(config["CacheServer:BroadcastTimeZone"] ?? "Asia/Tokyo");
         _nhkArea = config["CacheServer:NhkProgramApi:Area"] ?? "130";
         _http = new HttpClient(new SocketsHttpHandler
@@ -146,6 +149,17 @@ public sealed class ProgramInfoService : BackgroundService
                         .ToList(),
                     StringComparer.Ordinal)
                 : new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal);
+        }
+
+        if (!loaded)
+        {
+            var stored = _epgStorage.QueryPrograms(rangeStart, rangeEnd);
+            if (stored.Count > 0)
+            {
+                epgPrograms = stored;
+                loaded = true;
+                cacheUpdatedAt = DateTimeOffset.MinValue;
+            }
         }
 
         return new
@@ -331,6 +345,9 @@ public sealed class ProgramInfoService : BackgroundService
             _loadedBroadcastDates.Add(broadcastDate.AddDays(1));
             _lastFetchUtc = DateTimeOffset.UtcNow;
         }
+
+        foreach (var (jkId, programs) in newEpgPrograms)
+            _epgStorage.SavePrograms(jkId, programs);
 
         _logger.LogDebug("[ProgramInfo] EPG を更新しました: {Date}-{NextDate} ({Count} channels)",
             broadcastDate, broadcastDate.AddDays(1), newEpgPrograms.Count);
@@ -1337,13 +1354,6 @@ public sealed class ProgramInfoService : BackgroundService
     }
 
     private sealed record TVerBroadcasterInfo(string Type, int Area, int BroadcasterId);
-    private sealed record EpgProgram(
-        string Title,
-        DateTimeOffset StartAt,
-        DateTimeOffset EndAt,
-        string Source,
-        string? GenreCode,
-        string? GenreName);
     private sealed record AtxProgramStart(DateTimeOffset StartAt, string Title);
 }
 
@@ -1356,3 +1366,11 @@ public sealed record ProgramInfo(
     string? GenreName,
     string UpdatedAt,
     bool Stale);
+
+public sealed record EpgProgram(
+    string Title,
+    DateTimeOffset StartAt,
+    DateTimeOffset EndAt,
+    string Source,
+    string? GenreCode,
+    string? GenreName);

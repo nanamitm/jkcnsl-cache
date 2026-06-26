@@ -517,6 +517,46 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+#schedule-date-nav {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+#schedule-date-nav button {
+  height: 26px;
+  padding: 0 7px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-panel);
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+#schedule-date-nav button:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text-strong);
+}
+#schedule-date-nav button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+#schedule-date-input {
+  height: 26px;
+  padding: 0 5px;
+  background: var(--input-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-panel);
+  font-size: 11px;
+  cursor: pointer;
+  color-scheme: dark;
+}
+#schedule-date-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
 #schedule-settings-btn {
   flex-shrink: 0;
   width: 30px;
