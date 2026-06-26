@@ -75,7 +75,7 @@ public sealed class MetricsService : BackgroundService
             Interlocked.Increment(ref _postTooLong);
     }
 
-    public MetricsPayload CreatePayload()
+    public MetricsPayload CreatePayload(StorageStatus? storage = null)
     {
         lock (_lock)
         {
@@ -96,7 +96,8 @@ public sealed class MetricsService : BackgroundService
                     Interlocked.Read(ref _channelRejects),
                     Interlocked.Read(ref _totalRejects),
                     Interlocked.Read(ref _queueDrops),
-                    Interlocked.Read(ref _queueDisconnects)));
+                    Interlocked.Read(ref _queueDisconnects)),
+                storage);
         }
     }
 
@@ -222,7 +223,7 @@ public sealed class MetricsService : BackgroundService
     }
 }
 
-public sealed record MetricsPayload(MetricsSample Now, MetricsSample[] Series, MetricsTotals Totals);
+public sealed record MetricsPayload(MetricsSample Now, MetricsSample[] Series, MetricsTotals Totals, StorageStatus? Storage = null);
 
 public sealed record MetricsTotals(
     long CommentConnections,

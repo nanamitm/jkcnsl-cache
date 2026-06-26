@@ -16,6 +16,9 @@ public sealed class CommentStorageService : BackgroundService
 
     private record struct CommentEntry(string Channel, byte[] Data, long ReceivedAt);
 
+    private long _sessionInserted;
+    private long _lastInsertAtTicks;
+
     public CommentStorageService(IConfiguration config, ILogger<CommentStorageService> logger)
     {
         _logger = logger;
@@ -26,6 +29,18 @@ public sealed class CommentStorageService : BackgroundService
     public bool TryEnqueue(string channel, ReadOnlyMemory<byte> data) =>
         _queue.Writer.TryWrite(new CommentEntry(
             channel, data.ToArray(), DateTimeOffset.UtcNow.ToUnixTimeSeconds()));
+
+    public StorageStatus GetStatus()
+    {
+        var lastTicks = Interlocked.Read(ref _lastInsertAtTicks);
+        long dbBytes = 0;
+        try { if (File.Exists(_dbPath)) dbBytes = new FileInfo(_dbPath).Length; } catch { }
+        return new StorageStatus(
+            _queue.Reader.Count,
+            Interlocked.Read(ref _sessionInserted),
+            Math.Round(dbBytes / 1024d / 1024d, 1),
+            lastTicks > 0 ? new DateTimeOffset(lastTicks, TimeSpan.Zero) : null);
+    }
 
     protected override async Task ExecuteAsync(CancellationToken ct)
     {
@@ -115,6 +130,7 @@ public sealed class CommentStorageService : BackgroundService
 
     private void InsertBatch(SqliteConnection conn, List<CommentEntry> batch)
     {
+        var inserted = 0;
         using var tx = conn.BeginTransaction();
         using var cmd = conn.CreateCommand();
         cmd.CommandText =
@@ -148,10 +164,16 @@ public sealed class CommentStorageService : BackgroundService
                 pMail.Value = chat.TryGetProperty("mail",      out var mail) ? mail.GetString() ?? (object)DBNull.Value : DBNull.Value;
                 pCnt.Value  = content;
                 cmd.ExecuteNonQuery();
+                inserted++;
             }
             catch { /* malformed JSON は無視 */ }
         }
         tx.Commit();
+        if (inserted > 0)
+        {
+            Interlocked.Add(ref _sessionInserted, inserted);
+            Interlocked.Exchange(ref _lastInsertAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+        }
     }
 
     private void CleanupOld(SqliteConnection conn)
@@ -206,6 +228,12 @@ public sealed class CommentStorageService : BackgroundService
         cmd.ExecuteNonQuery();
     }
 }
+
+public sealed record StorageStatus(
+    int QueueDepth,
+    long SessionInserted,
+    double DbSizeMB,
+    DateTimeOffset? LastInsertAt);
 
 public record CommentRow(
     long Id,

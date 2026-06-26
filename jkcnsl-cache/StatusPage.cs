@@ -108,6 +108,13 @@ internal static class StatusPage
             <div class="chart"><div class="chart-title">メモリ使用量</div><canvas id="chart-memory" width="960" height="180"></canvas></div>
             <div class="chart"><div class="chart-title">GC</div><canvas id="chart-gc" width="640" height="180"></canvas></div>
           </div>
+          <h2>コメントストレージ</h2>
+          <div class="cards">
+            <div class="card"><div class="card-label">キュー深度</div><div class="card-value" id="m-store-queue">-</div></div>
+            <div class="card"><div class="card-label">今回保存数</div><div class="card-value" id="m-store-inserted">-</div></div>
+            <div class="card"><div class="card-label">DB サイズ</div><div class="card-value" id="m-store-size">-</div></div>
+            <div class="card"><div class="card-label">最終書込</div><div class="card-value" id="m-store-last">-</div></div>
+          </div>
         </section>
         <script>
         function fmtUptime(sec) {
@@ -300,6 +307,11 @@ internal static class StatusPage
             setText('m-working-set', Number(now.workingSetMB ?? 0).toFixed(1) + ' MB');
             setText('m-managed-memory', Number(now.managedMemoryMB ?? 0).toFixed(1) + ' MB');
             setText('m-gc', num((now.gen0Collections ?? 0) + (now.gen1Collections ?? 0) + (now.gen2Collections ?? 0)));
+            const st = data.storage ?? {};
+            setText('m-store-queue', num(st.queueDepth ?? 0));
+            setText('m-store-inserted', num(st.sessionInserted ?? 0));
+            setText('m-store-size', st.dbSizeMB != null ? Number(st.dbSizeMB).toFixed(1) + ' MB' : '-');
+            setText('m-store-last', st.lastInsertAt ? new Date(st.lastInsertAt).toLocaleTimeString() : '-');
             drawLine(document.getElementById('chart-connections'), series, [
               { key: 'commentConnections', label: 'comment', color: '#7eb8f7' },
               { key: 'watchConnections', label: 'watch', color: '#80cbc4' },

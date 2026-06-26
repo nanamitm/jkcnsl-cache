@@ -144,8 +144,8 @@ StatusOnly(app.MapGet("/api/logs",
 }));
 
 // 管理画面メトリクス API（ステータスポートのみ）
-StatusOnly(app.MapGet("/api/admin/metrics", (MetricsService metrics) =>
-    Results.Json(metrics.CreatePayload())));
+StatusOnly(app.MapGet("/api/admin/metrics", (MetricsService metrics, CommentStorageService storage) =>
+    Results.Json(metrics.CreatePayload(storage.GetStatus()))));
 
 // コメントエクスポート API（ステータスポートのみ）
 // GET /api/comments/export?date=2026-06-26[&channel=jk1]
