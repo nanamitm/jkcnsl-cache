@@ -300,10 +300,10 @@ public class ChannelManager
     }
 
     // watchdog 用: 監視中チャンネルのうち、ローカル待避が一定時間続いているものを検出するためのスナップショット
-    public IReadOnlyList<(string Channel, string Status, DateTimeOffset? FallbackSinceUtc)> GetMonitoredChannelFallbackStates() =>
+    public IReadOnlyList<(string Channel, string Status, DateTimeOffset? FallbackSinceUtc, bool IsScheduled)> GetMonitoredChannelFallbackStates() =>
         _channels
             .Where(kv => kv.Value.IsMonitored)
-            .Select(kv => (kv.Key, kv.Value.Status, kv.Value.LocalFallbackSinceUtc))
+            .Select(kv => (kv.Key, kv.Value.Status, kv.Value.LocalFallbackSinceUtc, kv.Value.IsScheduled))
             .ToArray();
 
     // watchdog 用: fallbackLocal に固まって復帰しないチャンネルを強制再起動する

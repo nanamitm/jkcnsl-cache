@@ -45,9 +45,11 @@ public class ChannelMonitorService : IHostedService
             catch (OperationCanceledException) { break; }
 
             var now = DateTimeOffset.UtcNow;
-            foreach (var (channel, status, fallbackSinceUtc) in _channelManager.GetMonitoredChannelFallbackStates())
+            foreach (var (channel, status, fallbackSinceUtc, isScheduled) in _channelManager.GetMonitoredChannelFallbackStates())
             {
                 if (status != "fallbackLocal" || fallbackSinceUtc is not { } since) continue;
+                // 配信予定の枠を待機中は意図的な fallbackLocal なので再起動しない
+                if (isScheduled) continue;
                 if (now - since < _fallbackStuckThreshold) continue;
                 if (_lastWatchdogRestartAt.TryGetValue(channel, out var lastRestart) &&
                     now - lastRestart < _fallbackStuckThreshold) continue;
