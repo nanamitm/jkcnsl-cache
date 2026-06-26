@@ -65,9 +65,15 @@ systemctl stop "$SERVICE"
 echo "[4/5] バイナリ差し替え中..."
 install /tmp/jkcnsl-cache-publish/jkcnsl-cache "$APP_DIR/jkcnsl-cache"
 chown jkcnsl:jkcnsl "$APP_DIR/jkcnsl-cache"
+mkdir -p "$APP_DIR/.extract"
+chown jkcnsl:jkcnsl "$APP_DIR/.extract"
 if [ -d /tmp/jkcnsl-cache-publish/wwwroot ]; then
     cp -r /tmp/jkcnsl-cache-publish/wwwroot "$APP_DIR/"
     chown -R jkcnsl:jkcnsl "$APP_DIR/wwwroot"
+fi
+if [ -f "$SCRIPT_DIR/jkcnsl-cache.service" ]; then
+    cp "$SCRIPT_DIR/jkcnsl-cache.service" /etc/systemd/system/jkcnsl-cache.service
+    systemctl daemon-reload
 fi
 echo "      appsettings.json はそのまま保持します"
 

@@ -10,6 +10,7 @@ ExecStart=/opt/jkcnsl-cache/jkcnsl-cache
 Restart=always
 RestartSec=5
 Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_BUNDLE_EXTRACT_BASE_DIR=/opt/jkcnsl-cache/.extract
 
 [Install]
 WantedBy=multi-user.target

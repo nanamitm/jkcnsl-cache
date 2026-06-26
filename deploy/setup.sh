@@ -157,6 +157,7 @@ sed -i "s|\"MainPort\": [0-9]*|\"MainPort\": $PORT|"                       "$APP
 sed -i "s|\"StatusPort\": [0-9]*|\"StatusPort\": $STATUS_PORT|"            "$APP_DIR/appsettings.json"
 sed -i "s|\"PublicBaseUrl\": \"[^\"]*\"|\"PublicBaseUrl\": \"$PUBLIC_URL\"|" "$APP_DIR/appsettings.json"
 
+mkdir -p "$APP_DIR/.extract"
 chown -R jkcnsl:jkcnsl "$APP_DIR"
 
 # --- 6. systemd サービス登録 ---
