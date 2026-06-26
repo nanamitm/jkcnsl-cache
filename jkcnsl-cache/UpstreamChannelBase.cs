@@ -34,6 +34,9 @@ public abstract class UpstreamChannelBase
     public virtual string? CurrentTarget => null;
     public virtual bool IsScheduled => false;
     public virtual DateTimeOffset? ScheduledStartUtc => null;
+    // 意図的な fallbackLocal 待機中（バックオフ・再確認インターバル等）であり
+    // ウォッチドッグが再起動を抑制すべき状態かどうか
+    public virtual bool IsIntentionalFallbackWait => false;
     public virtual DateTimeOffset? VposBaseTime
     {
         get

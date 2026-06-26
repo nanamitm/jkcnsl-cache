@@ -35,6 +35,8 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         !string.IsNullOrEmpty(_lvId) ? _lvId : null;
     public override bool IsScheduled => _isScheduled;
     public override DateTimeOffset? ScheduledStartUtc => _scheduledStartUtc;
+    // 配信なし確認インターバル中（watch_page_unavailable）または非公式検索バッチ待ちは意図的な待機
+    public override bool IsIntentionalFallbackWait => _isRetryWaiting;
     public override DateTimeOffset? VposBaseTime
     {
         get

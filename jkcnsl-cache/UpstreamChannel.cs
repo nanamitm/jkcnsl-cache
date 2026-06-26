@@ -79,6 +79,14 @@ public sealed class UpstreamChannel : UpstreamChannelBase
 
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
     {
+        // 前回の接続がキャンセルされた際に未完了のままになった投稿を破棄する
+        if (_pendingPostTcs != null)
+        {
+            _pendingPostTcs.TrySetResult(
+                "{\"type\":\"error\",\"data\":{\"code\":\"CONNECTION_LOST\"}}"u8.ToArray());
+            _pendingPostTcs = null;
+        }
+
         try
         {
         using var watchWs = new ClientWebSocket();
