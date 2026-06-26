@@ -1321,14 +1321,35 @@ function renderSchedule() {
   const start = new Date(schedule.startAt).getTime()
   const end = new Date(schedule.endAt).getTime()
   const totalMinutes = Math.max(1, Math.round((end - start) / 60000))
-  const pxPerMinute = 2
-  const bodyHeight = totalMinutes * pxPerMinute
+  const EPG_ONE_MIN_PX = 2
+  const EPG_MINIMUM_PX = 36
   const channelsToShow = schedule.channels.filter(ch => {
     if (!scheduleChannelFilters.has(ch.video))
       return false
     return true
   })
   const hasGenreFilter = scheduleGenreFilters.size > 0
+  // 短い番組のタイトルが見えるよう、その時間帯のpx/分を引き上げる（EDCB方式の可変ピクセル密度）
+  const ppm = new Array<number>(totalMinutes).fill(EPG_ONE_MIN_PX)
+  for (const ch of channelsToShow) {
+    for (const program of ch.programs) {
+      const progStart = new Date(program.startAt).getTime()
+      const progEnd = new Date(program.endAt).getTime()
+      const durMin = Math.ceil((progEnd - progStart) / 60000)
+      if (durMin > 0 && durMin * EPG_ONE_MIN_PX < EPG_MINIMUM_PX) {
+        const need = Math.ceil(EPG_MINIMUM_PX / durMin)
+        const mStart = Math.max(0, Math.floor((progStart - start) / 60000))
+        const mEnd = Math.min(totalMinutes - 1, mStart + durMin - 1)
+        for (let m = mStart; m <= mEnd; m++)
+          ppm[m] = Math.max(ppm[m], need)
+      }
+    }
+  }
+  const cumPix = new Array<number>(totalMinutes + 1)
+  cumPix[0] = 0
+  for (let m = 0; m < totalMinutes; m++)
+    cumPix[m + 1] = cumPix[m] + ppm[m]
+  const bodyHeight = cumPix[totalMinutes]
 
   scheduleGrid.innerHTML = ''
   scheduleGrid.classList.toggle('schedule-filtering', hasGenreFilter)
@@ -1355,7 +1376,7 @@ function renderSchedule() {
   for (let minute = 0; minute <= totalMinutes; minute += 60) {
     const tick = document.createElement('div')
     tick.className = 'schedule-time'
-    tick.style.top = `${minute * pxPerMinute}px`
+    tick.style.top = `${cumPix[minute]}px`
     tick.textContent = formatScheduleTime(new Date(start + minute * 60000))
     timeAxis.append(tick)
   }
@@ -1379,7 +1400,7 @@ function renderSchedule() {
       column.append(empty)
     }
     for (const program of ch.programs)
-      column.append(createScheduleProgram(program, start, end, pxPerMinute))
+      column.append(createScheduleProgram(program, start, end, cumPix))
     scheduleGrid.append(column)
   }
 
@@ -1394,7 +1415,8 @@ function renderSchedule() {
   if (start <= now && now < end) {
     const line = document.createElement('div')
     line.className = 'schedule-now'
-    line.style.top = `${((now - start) / 60000) * pxPerMinute}px`
+    const nowMin = Math.min(totalMinutes, Math.max(0, Math.floor((now - start) / 60000)))
+    line.style.top = `${cumPix[nowMin]}px`
     scheduleGrid.append(line)
   }
 
@@ -1442,13 +1464,15 @@ function refreshScheduleClock() {
   renderSchedule()
 }
 
-function createScheduleProgram(program: ScheduleProgram, rangeStart: number, rangeEnd: number, pxPerMinute: number) {
+function createScheduleProgram(program: ScheduleProgram, rangeStart: number, rangeEnd: number, cumPix: number[]) {
   const programStart = new Date(program.startAt).getTime()
   const programEnd = new Date(program.endAt).getTime()
   const clippedStart = Math.max(rangeStart, programStart)
   const clippedEnd = Math.min(rangeEnd, programEnd)
-  const top = Math.max(0, (clippedStart - rangeStart) / 60000 * pxPerMinute)
-  const height = Math.max(12, (clippedEnd - clippedStart) / 60000 * pxPerMinute - 2)
+  const startMin = Math.max(0, Math.floor((clippedStart - rangeStart) / 60000))
+  const endMin = Math.min(cumPix.length - 1, Math.ceil((clippedEnd - rangeStart) / 60000))
+  const top = cumPix[startMin]
+  const height = Math.max(2, cumPix[endMin] - cumPix[startMin] - 2)
 
   const card = document.createElement('div')
   const selectedByGenreFilter = !scheduleGenreFilters.size ||
