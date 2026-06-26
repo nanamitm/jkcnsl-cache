@@ -23,6 +23,7 @@ public class ChannelMonitorService : IHostedService
 
     private static readonly TimeSpan FallbackWatchdogInterval = TimeSpan.FromMinutes(1);
     private readonly TimeSpan _fallbackStuckThreshold;
+    private readonly Dictionary<string, DateTimeOffset> _lastWatchdogRestartAt = new();
 
     public Task StartAsync(CancellationToken ct)
     {
@@ -34,6 +35,8 @@ public class ChannelMonitorService : IHostedService
 
     // RunLoopAsync が（バグ等で）静かに停止し、fallbackLocal（公式ローカル待機中）から
     // 復帰しなくなったチャンネルを検出し、強制的に再起動する応急処置。
+    // 再起動後は _fallbackStuckThreshold が経過するまで同チャンネルを再起動しない。
+    // これにより watch_page_unavailable の待機（NoStreamCheckIntervalMinutes）が毎分中断されるのを防ぐ。
     private async Task RunFallbackWatchdogAsync(CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
@@ -46,11 +49,14 @@ public class ChannelMonitorService : IHostedService
             {
                 if (status != "fallbackLocal" || fallbackSinceUtc is not { } since) continue;
                 if (now - since < _fallbackStuckThreshold) continue;
+                if (_lastWatchdogRestartAt.TryGetValue(channel, out var lastRestart) &&
+                    now - lastRestart < _fallbackStuckThreshold) continue;
 
                 _logger.LogWarning(
                     "[ChannelMonitor] [{Channel}] fallbackLocalが{Minutes}分以上継続しているため再起動します",
                     channel, (int)(now - since).TotalMinutes);
                 await _channelManager.RestartChannelAsync(channel);
+                _lastWatchdogRestartAt[channel] = now;
             }
         }
     }

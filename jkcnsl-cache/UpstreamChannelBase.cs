@@ -177,9 +177,12 @@ public abstract class UpstreamChannelBase
     }
 
     // watchdog 用: 実行中のループを止めて再起動する。fallbackLocal に固まって復帰しないチャンネルの応急処置。
+    // StopAsync 後に fallback 状態をリセットすることで、再起動後に SetLocalFallbackActive(true) が
+    // 呼ばれた際に _fallbackVposBaseTicks が確実に更新され、watchdog の経過時間が正しくリセットされる。
     public async Task RestartAsync()
     {
         await StopAsync();
+        SetLocalFallbackActive(false);
         EnsureRunning();
     }
 
