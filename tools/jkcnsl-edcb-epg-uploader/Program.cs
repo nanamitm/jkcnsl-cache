@@ -257,6 +257,7 @@ internal sealed class SettingsForm : Form
     private readonly DataGridView _serviceMappingsGrid;
     private readonly ToolStripStatusLabel _statusLabel;
     private readonly System.Windows.Forms.Timer _statusTimer;
+    private DateTimeOffset? _lastHandledManualCompletionAt;
 
     public SettingsForm(ConfigStore configStore, AppLogger logger, UploadScheduler scheduler, string executablePath)
     {
@@ -430,7 +431,11 @@ internal sealed class SettingsForm : Form
         buttons.Controls.Add(saveButton);
 
         var sendNowButton = new Button { Text = "今すぐ送信", AutoSize = true };
-        sendNowButton.Click += (_, _) => _scheduler.TriggerNow();
+        sendNowButton.Click += (_, _) =>
+        {
+            ShowStatus("送信を開始しました。");
+            _scheduler.TriggerNow();
+        };
         buttons.Controls.Add(sendNowButton);
 
         var installButton = new Button { Text = "自動起動を登録", AutoSize = true };
@@ -490,6 +495,9 @@ internal sealed class SettingsForm : Form
         root.Controls.Add(buttons, 0, 2);
         root.Controls.Add(statusStrip, 0, 3);
         Controls.Add(root);
+
+        _scheduler.StatusChanged += OnSchedulerStatusChanged;
+        FormClosed += (_, _) => _scheduler.StatusChanged -= OnSchedulerStatusChanged;
     }
 
     private void SaveSettings()
@@ -560,6 +568,39 @@ internal sealed class SettingsForm : Form
         _statusLabel.Text = message;
         _statusTimer.Stop();
         _statusTimer.Start();
+    }
+
+    private void OnSchedulerStatusChanged(SchedulerStatus status)
+    {
+        if (IsDisposed)
+        {
+            return;
+        }
+
+        if (InvokeRequired)
+        {
+            BeginInvoke(() => OnSchedulerStatusChanged(status));
+            return;
+        }
+
+        if (!string.Equals(status.Reason, "manual", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (status.IsRunning)
+        {
+            ShowStatus("送信中です...");
+            return;
+        }
+
+        if (status.LastCompletedAt is null || status.LastCompletedAt == _lastHandledManualCompletionAt)
+        {
+            return;
+        }
+
+        _lastHandledManualCompletionAt = status.LastCompletedAt;
+        ShowStatus(status.LastMessage == "成功" ? "送信が完了しました。" : "送信に失敗しました。ログを確認してください。");
     }
 
     private void RemoveSelectedMappings()
