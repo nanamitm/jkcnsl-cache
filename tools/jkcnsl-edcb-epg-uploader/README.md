@@ -2,27 +2,58 @@
 
 EDCB の番組表を読み取り、`jkcnsl-cache` の `POST /api/admin/epg/import` へ送る Windows 向け送信ツールです。
 
-## 使い方
+## 概要
+
+- 引数なしで起動すると常駐モードで起動します
+- 常駐時はタスクトレイに入り、定期的に番組表を送信します
+- `--dry-run` や `--list-services` のような確認用コマンドも使えます
+- 常駐起動時はコンソールを開かないようにしてあります
+
+## 初回セットアップ
 
 1. 必要なら `appsettings.json` の `ImportApi.BaseUrl` を実サーバー URL に変更
 2. `local/appsettings.json.example` を参考に `local/appsettings.json` を作成して `ImportApi.ApiKey` を設定
-3. `--dry-run` で件数確認
-4. 問題なければ通常実行で送信
+3. 必要なら設定ダイアログの `送信チャンネル設定` を確認
+4. `--dry-run` で件数確認
+5. 問題なければ通常起動または `--watch` で常駐開始
 
-引数なしで起動した場合は、既定で常駐モードとして起動します。
+## 普段の使い方
 
-常駐起動時はコンソールを開かないようにしてあります。`--dry-run` や `--list-services` など出力が必要なコマンド時だけ、親コンソールへ表示します。
+- 通常は引数なしで起動すれば常駐モードになります
+- タスクトレイの右クリックメニューから `設定` `ログ` `今すぐ送信` `終了` が使えます
+- 定期送信の間隔は `Scheduler.IntervalMinutes` で調整できます
+- 起動直後に1回送るかどうかは `Scheduler.RunImmediately` で変更できます
+- PC起動直後の待機時間は `Scheduler.StartupDelaySeconds` で調整できます
 
-## コマンド
+## 設定ファイル
 
-- `jkcnsl-edcb-epg-uploader.exe --list-services`
-- `jkcnsl-edcb-epg-uploader.exe --dry-run`
-- `jkcnsl-edcb-epg-uploader.exe --channel jk171`
-- `jkcnsl-edcb-epg-uploader.exe --watch`
-- `jkcnsl-edcb-epg-uploader.exe --install-autostart`
-- `jkcnsl-edcb-epg-uploader.exe --uninstall-autostart`
+`appsettings.json` を読み込んだ後、`local/appsettings.json` があればその内容で上書きします。`local/appsettings.json` は `.gitignore` で除外しているため、ローカルの API キーをそのまま置いてもリモートへプッシュされません。
 
-## 初期設定済み ServiceMappings
+## 設定ダイアログ
+
+`設定` から以下を編集できます。
+
+- `ImportApi.BaseUrl`
+- `ImportApi.ApiKey`
+- `Scheduler.IntervalMinutes`
+- `Scheduler.StartupDelaySeconds`
+- `Scheduler.RunImmediately`
+- `Scheduler.UseTrayIcon`
+- `Scheduler.HideConsoleWindow`
+- `ServiceMappings`
+
+`ServiceMappings` は表形式で編集できます。
+
+- `追加`
+- `削除`
+- `上へ`
+- `下へ`
+- `既定値を追加`
+- `EDCBから候補取得`
+
+保存や自動起動登録の成功メッセージは、設定ウィンドウ右下のステータスに表示されます。
+
+## 送信チャンネル設定
 
 ```json
 [
@@ -47,11 +78,12 @@ EDCB の番組表を読み取り、`jkcnsl-cache` の `POST /api/admin/epg/impor
 ]
 ```
 
-2026-06-27 にこの開発環境の EDCB `--list-services` で確認した BSテレ東系の値を初期投入しています。別環境で使う場合は `--list-services` で再確認してください。
+ BSテレ東系の値を初期投入しています。別環境で使う場合は `--list-services` で再確認してください。
 
-## ローカル設定
+## ログ
 
-`appsettings.json` を読み込んだ後、`local/appsettings.json` があればその内容で上書きします。`local/appsettings.json` は `.gitignore` で除外しているため、ローカルの API キーをそのまま置いてもリモートへプッシュされません。
+- `ログ` 画面で直近ログを確認できます
+- `logs/yyyyMMdd.log` にもファイル出力されます
 
 ## 常駐送信
 
@@ -59,25 +91,18 @@ EDCB の番組表を読み取り、`jkcnsl-cache` の `POST /api/admin/epg/impor
 
 同時起動防止のため、常駐モードでは `Scheduler.MutexName` の named mutex を使います。すでに常駐中なら2重起動は失敗します。`Scheduler.UseTrayIcon` を `false` にすると従来どおりコンソール常駐に戻せます。`Scheduler.HideConsoleWindow` を `true` にしている場合、トレイ常駐時はコンソールを隠します。
 
-## 設定 UI とログ
-
-トレイメニューの `設定` から、以下を `local/appsettings.json` へ保存できます。
-
-- `ImportApi.BaseUrl`
-- `ImportApi.ApiKey`
-- `Scheduler.IntervalMinutes`
-- `Scheduler.StartupDelaySeconds`
-- `Scheduler.RunImmediately`
-- `Scheduler.UseTrayIcon`
-- `Scheduler.HideConsoleWindow`
-- `ServiceMappings`
-
-`ServiceMappings` は設定ダイアログ内の表で編集できます。`追加` `削除` `上へ` `下へ` `既定値を追加` に加えて、`EDCBから候補取得` で EDCB のサービス一覧から行を追加できます。
-
-トレイメニューの `ログ` では、アプリ内で保持している直近ログを確認できます。あわせて `logs/yyyyMMdd.log` にもファイル出力されます。
-
 ## 自動起動
 
 `--install-autostart` で、Windows のユーザー `スタートアップ` フォルダにショートカットを作成します。ログオン時はそのショートカットから本アプリが起動します。削除は `--uninstall-autostart` です。
 
 以前のタスクスケジューラ方式と違って、通常のユーザー権限でも登録しやすく、`アクセスが拒否されました` のようなエラーを避けやすくしています。
+
+## コマンド一覧
+
+- `jkcnsl-edcb-epg-uploader.exe`
+- `jkcnsl-edcb-epg-uploader.exe --watch`
+- `jkcnsl-edcb-epg-uploader.exe --dry-run`
+- `jkcnsl-edcb-epg-uploader.exe --list-services`
+- `jkcnsl-edcb-epg-uploader.exe --channel jk171`
+- `jkcnsl-edcb-epg-uploader.exe --install-autostart`
+- `jkcnsl-edcb-epg-uploader.exe --uninstall-autostart`
