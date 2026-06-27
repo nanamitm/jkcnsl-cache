@@ -79,6 +79,8 @@ public sealed class ProgramInfoService : BackgroundService
 
     private static readonly IReadOnlyDictionary<string, string> JikkyoToNhkService = new Dictionary<string, string>
     {
+        ["jk1"]   = "g1",
+        ["jk2"]   = "e1",
         ["jk103"] = "s5",
         ["jk104"] = "s6",
     };
