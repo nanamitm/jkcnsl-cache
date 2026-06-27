@@ -367,6 +367,10 @@ internal sealed class SettingsForm : Form
         importFromEdcbButton.Click += async (_, _) => await ImportFromEdcbAsync();
         mappingButtons.Controls.Add(importFromEdcbButton);
 
+        var autofillVideoButton = new Button { Text = "videoを自動補完", AutoSize = true };
+        autofillVideoButton.Click += (_, _) => AutofillVideoNames();
+        mappingButtons.Controls.Add(autofillVideoButton);
+
         _serviceMappingsGrid = new DataGridView
         {
             Dock = DockStyle.Fill,
@@ -414,6 +418,7 @@ internal sealed class SettingsForm : Form
             HeaderText = "メモ",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
         });
+        _serviceMappingsGrid.CellEndEdit += OnServiceMappingsCellEndEdit;
 
         mappingLayout.Controls.Add(mappingButtons, 0, 0);
         mappingLayout.Controls.Add(_serviceMappingsGrid, 0, 1);
@@ -676,7 +681,7 @@ internal sealed class SettingsForm : Form
                 _serviceMappings.Add(new ServiceMappingRow
                 {
                     Enabled = true,
-                    Video = $"jk{candidate.Sid}",
+                    Video = SuggestVideoName(candidate.ServiceName, candidate.Sid),
                     Onid = candidate.Onid,
                     Tsid = candidate.Tsid,
                     Sid = candidate.Sid,
@@ -765,6 +770,60 @@ internal sealed class SettingsForm : Form
             new ServiceMapping { Enabled = true, Video = "jk172", Onid = 4, Tsid = 16402, Sid = 172, Memo = "ＢＳテレ東２" },
             new ServiceMapping { Enabled = true, Video = "jk173", Onid = 4, Tsid = 16402, Sid = 173, Memo = "ＢＳテレ東３" }
         };
+
+    private void AutofillVideoNames()
+    {
+        var updatedCount = 0;
+        foreach (var row in _serviceMappings)
+        {
+            if (!string.IsNullOrWhiteSpace(row.Video))
+            {
+                continue;
+            }
+
+            if (row.Sid <= 0)
+            {
+                continue;
+            }
+
+            row.Video = SuggestVideoName(row.Memo, row.Sid);
+            updatedCount++;
+        }
+
+        _serviceMappings.ResetBindings();
+        ShowStatus(updatedCount > 0
+            ? $"{updatedCount} 件の video を自動補完しました。"
+            : "自動補完できる video はありませんでした。");
+    }
+
+    private void OnServiceMappingsCellEndEdit(object? sender, DataGridViewCellEventArgs e)
+    {
+        if (e.RowIndex < 0 || e.RowIndex >= _serviceMappings.Count)
+        {
+            return;
+        }
+
+        var row = _serviceMappings[e.RowIndex];
+        if (!string.IsNullOrWhiteSpace(row.Video) || row.Sid <= 0)
+        {
+            return;
+        }
+
+        row.Video = SuggestVideoName(row.Memo, row.Sid);
+        _serviceMappings.ResetItem(e.RowIndex);
+    }
+
+    private static string SuggestVideoName(string? serviceName, int sid)
+    {
+        var normalized = (serviceName ?? string.Empty).Trim();
+        return normalized switch
+        {
+            "ＢＳテレ東" => "jk171",
+            "ＢＳテレ東２" => "jk172",
+            "ＢＳテレ東３" => "jk173",
+            _ => $"jk{sid}"
+        };
+    }
 }
 
 internal sealed class ServiceSelectionForm : Form
