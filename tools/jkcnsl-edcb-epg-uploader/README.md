@@ -29,6 +29,16 @@ EDCB の番組表を読み取り、`jkcnsl-cache` の `POST /api/admin/epg/impor
 
 `appsettings.json` を読み込んだ後、`local/appsettings.json` があればその内容で上書きします。`local/appsettings.json` は `.gitignore` で除外しているため、ローカルの API キーをそのまま置いてもリモートへプッシュされません。
 
+## 単一 exe 配布
+
+単一ファイルの自己完結 exe は、publish profile を使って作成できます。
+
+```powershell
+dotnet publish .\jkcnsl-edcb-epg-uploader.csproj /p:PublishProfile=Properties\PublishProfiles\win-x64-single-file.pubxml
+```
+
+出力先は `bin/publish/win-x64/` です。`local/appsettings.json` は引き続き外部ファイルとして扱う想定なので、配布時は必要に応じて `local/appsettings.json.example` を元に別途配置してください。
+
 ## 設定ダイアログ
 
 `設定` から以下を編集できます。
@@ -78,7 +88,7 @@ EDCB の番組表を読み取り、`jkcnsl-cache` の `POST /api/admin/epg/impor
 ]
 ```
 
- BSテレ東系の値を初期投入しています。別環境で使う場合は `--list-services` で再確認してください。
+2026-06-27 にこの開発環境の EDCB `--list-services` で確認した BSテレ東系の値を初期投入しています。別環境で使う場合は `--list-services` で再確認してください。
 
 ## ログ
 
