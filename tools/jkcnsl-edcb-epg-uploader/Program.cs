@@ -1161,6 +1161,7 @@ internal sealed class UploadWorker
     public async Task<UploadResult> ExecuteAsync(AppConfig config, bool dryRun, string? singleChannel, CancellationToken cancellationToken = default)
     {
         var messages = new List<string>();
+        var hadError = false;
         var mappings = config.ServiceMappings
             .Where(x => x.Enabled)
             .Where(x => string.IsNullOrWhiteSpace(singleChannel) || string.Equals(x.Video, singleChannel, StringComparison.OrdinalIgnoreCase))
@@ -1182,20 +1183,36 @@ internal sealed class UploadWorker
         foreach (var mapping in mappings)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var programs = edcb.GetPrograms(mapping, config.Window);
-            var line = $"{mapping.Video}: {programs.Count}件";
-            messages.Add(line);
-            _logger.Info(line);
-
-            if (!dryRun)
+            try
             {
-                await UploadProgramsAsync(httpClient, config, mapping.Video, programs, cancellationToken);
+                var programs = edcb.GetPrograms(mapping, config.Window);
+                var line = $"{mapping.Video}: {programs.Count}件";
+                messages.Add(line);
+                _logger.Info(line);
+
+                if (!dryRun)
+                {
+                    await UploadProgramsAsync(httpClient, config, mapping.Video, programs, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                hadError = true;
+                var message = $"{mapping.Video}: 失敗 ({ex.Message})";
+                messages.Add(message);
+                _logger.Error($"{mapping.Video} の送信に失敗しました。", ex);
             }
         }
 
-        messages.Add(dryRun ? "dry-run 完了" : "送信完了");
+        messages.Add(dryRun
+            ? (hadError ? "dry-run 一部失敗" : "dry-run 完了")
+            : (hadError ? "送信一部失敗" : "送信完了"));
         _logger.Info(messages[^1]);
-        return new UploadResult(true, messages);
+        return new UploadResult(!hadError, messages);
     }
 
     private async Task UploadProgramsAsync(
@@ -1304,8 +1321,11 @@ internal sealed class EdcbEpgClient : IDisposable
             }
 
             var genre = item.ContentInfo?.nibbleList.FirstOrDefault();
+            var title = string.IsNullOrWhiteSpace(item.ShortInfo?.event_name)
+                ? "(番組名なし)"
+                : item.ShortInfo!.event_name.Trim();
             programs.Add(new ImportProgram(
-                item.ShortInfo?.event_name ?? "(番組名なし)",
+                title,
                 start,
                 end.Value,
                 genre is null ? null : $"{genre.content_nibble_level_1:X1}{genre.content_nibble_level_2:X1}",
