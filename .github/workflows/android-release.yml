@@ -21,9 +21,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
-      - name: Set up MSVC
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Install Qt for Windows
         uses: jurplel/install-qt-action@v4
         with:
@@ -35,15 +32,28 @@ jobs:
           cache: true
 
       - name: Configure
-        shell: pwsh
+        shell: cmd
         run: |
-          cmake -S jkcnsl-cache/android -B build-windows -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR"
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find VC\Auxiliary\Build\vcvars64.bat`) do set "VCVARS=%%i"
+          if not defined VCVARS (
+            echo vcvars64.bat was not found.
+            exit /b 1
+          )
+          call "%VCVARS%"
+          cmake -S jkcnsl-cache/android -B build-windows -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            "-DCMAKE_PREFIX_PATH=%QT_ROOT_DIR%"
 
       - name: Build
-        shell: pwsh
-        run: cmake --build build-windows --config Release
+        shell: cmd
+        run: |
+          for /f "usebackq delims=" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -find VC\Auxiliary\Build\vcvars64.bat`) do set "VCVARS=%%i"
+          if not defined VCVARS (
+            echo vcvars64.bat was not found.
+            exit /b 1
+          )
+          call "%VCVARS%"
+          cmake --build build-windows --config Release
 
       - name: Package
         shell: pwsh
