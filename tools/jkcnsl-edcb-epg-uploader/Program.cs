@@ -438,8 +438,13 @@ internal sealed class SettingsForm : Form
         var sendNowButton = new Button { Text = "今すぐ送信", AutoSize = true };
         sendNowButton.Click += (_, _) =>
         {
+            if (!TryBuildManualSendConfig(out var manualConfig))
+            {
+                return;
+            }
+
             ShowStatus("送信を開始しました。");
-            _scheduler.TriggerNow();
+            _scheduler.TriggerNow(manualConfig);
         };
         buttons.Controls.Add(sendNowButton);
 
@@ -509,32 +514,53 @@ internal sealed class SettingsForm : Form
     {
         _serviceMappingsGrid.EndEdit();
 
-        if (!Uri.TryCreate(_baseUrlTextBox.Text.Trim(), UriKind.Absolute, out _))
+        if (!TryBuildEditableConfig(out var updated))
         {
-            MessageBox.Show("API URL の形式が不正です。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
             return;
         }
-
-        if (!TryBuildServiceMappings(out var serviceMappings, out var validationMessage))
-        {
-            MessageBox.Show(validationMessage, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            return;
-        }
-
-        var updated = _configStore.Current.DeepClone();
-        updated.ImportApi.BaseUrl = _baseUrlTextBox.Text.Trim();
-        updated.ImportApi.ApiKey = _apiKeyTextBox.Text.Trim();
-        updated.Scheduler.IntervalMinutes = (int)_intervalMinutes.Value;
-        updated.Scheduler.StartupDelaySeconds = (int)_startupDelaySeconds.Value;
-        updated.Scheduler.RunImmediately = _runImmediatelyCheckBox.Checked;
-        updated.Scheduler.UseTrayIcon = _useTrayIconCheckBox.Checked;
-        updated.Scheduler.HideConsoleWindow = _hideConsoleWindowCheckBox.Checked;
-        updated.ServiceMappings = serviceMappings;
 
         _configStore.Update(updated, saveLocalSettings: true);
         _scheduler.ReloadSchedule();
         _logger.Info("設定を保存しました。");
         ShowStatus("local/appsettings.json に保存しました。");
+    }
+
+    private bool TryBuildManualSendConfig(out AppConfig config)
+    {
+        if (!TryBuildEditableConfig(out config))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private bool TryBuildEditableConfig(out AppConfig config)
+    {
+        if (!Uri.TryCreate(_baseUrlTextBox.Text.Trim(), UriKind.Absolute, out _))
+        {
+            MessageBox.Show("API URL の形式が不正です。", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            config = null!;
+            return false;
+        }
+
+        if (!TryBuildServiceMappings(out var serviceMappings, out var validationMessage))
+        {
+            MessageBox.Show(validationMessage, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            config = null!;
+            return false;
+        }
+
+        config = _configStore.Current.DeepClone();
+        config.ImportApi.BaseUrl = _baseUrlTextBox.Text.Trim();
+        config.ImportApi.ApiKey = _apiKeyTextBox.Text.Trim();
+        config.Scheduler.IntervalMinutes = (int)_intervalMinutes.Value;
+        config.Scheduler.StartupDelaySeconds = (int)_startupDelaySeconds.Value;
+        config.Scheduler.RunImmediately = _runImmediatelyCheckBox.Checked;
+        config.Scheduler.UseTrayIcon = _useTrayIconCheckBox.Checked;
+        config.Scheduler.HideConsoleWindow = _hideConsoleWindowCheckBox.Checked;
+        config.ServiceMappings = serviceMappings;
+        return true;
     }
 
     private static TextBox AddTextBoxRow(TableLayoutPanel table, int row, string label, string value)
@@ -1033,13 +1059,13 @@ internal sealed class UploadScheduler : IDisposable
         }, _cts.Token);
     }
 
-    public void TriggerNow()
+    public void TriggerNow(AppConfig? overrideConfig = null)
     {
         _ = Task.Run(async () =>
         {
             try
             {
-                await RunOnceAsync("manual", _cts.Token);
+                await RunOnceAsync("manual", _cts.Token, overrideConfig);
             }
             catch (OperationCanceledException)
             {
@@ -1053,7 +1079,7 @@ internal sealed class UploadScheduler : IDisposable
         PublishStatus("reloaded");
     }
 
-    private async Task RunOnceAsync(string reason, CancellationToken cancellationToken)
+    private async Task RunOnceAsync(string reason, CancellationToken cancellationToken, AppConfig? overrideConfig = null)
     {
         if (!await _runGate.WaitAsync(0, cancellationToken))
         {
@@ -1065,7 +1091,9 @@ internal sealed class UploadScheduler : IDisposable
         {
             _isRunning = true;
             PublishStatus(reason);
-            var result = await _worker.ExecuteAsync(dryRun: false, singleChannel: null, cancellationToken);
+            var result = overrideConfig is null
+                ? await _worker.ExecuteAsync(dryRun: false, singleChannel: null, cancellationToken)
+                : await _worker.ExecuteAsync(overrideConfig, dryRun: false, singleChannel: null, cancellationToken);
             _lastCompletedAt = DateTimeOffset.Now;
             _lastMessage = result.Success ? "成功" : "失敗";
         }
@@ -1123,8 +1151,13 @@ internal sealed class UploadWorker
 
     public async Task<UploadResult> ExecuteAsync(bool dryRun, string? singleChannel, CancellationToken cancellationToken = default)
     {
-        var messages = new List<string>();
         var config = _configStore.Current.DeepClone();
+        return await ExecuteAsync(config, dryRun, singleChannel, cancellationToken);
+    }
+
+    public async Task<UploadResult> ExecuteAsync(AppConfig config, bool dryRun, string? singleChannel, CancellationToken cancellationToken = default)
+    {
+        var messages = new List<string>();
         var mappings = config.ServiceMappings
             .Where(x => x.Enabled)
             .Where(x => string.IsNullOrWhiteSpace(singleChannel) || string.Equals(x.Video, singleChannel, StringComparison.OrdinalIgnoreCase))
