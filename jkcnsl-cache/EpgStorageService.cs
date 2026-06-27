@@ -53,6 +53,61 @@ public sealed class EpgStorageService : BackgroundService
         }
     }
 
+    public void ReplaceImportedPrograms(string channel, IReadOnlyList<EpgProgram> programs)
+    {
+        if (programs.Count == 0) return;
+
+        try
+        {
+            using var conn = OpenConnection();
+            using var tx = conn.BeginTransaction();
+
+            var rangeStart = programs.Min(p => p.StartAt).ToUnixTimeSeconds();
+            var rangeEnd = programs.Max(p => p.EndAt).ToUnixTimeSeconds();
+
+            using (var delete = conn.CreateCommand())
+            {
+                delete.CommandText =
+                    "DELETE FROM epg_import_programs " +
+                    "WHERE channel = $ch AND end_at > $from AND start_at < $to";
+                delete.Parameters.AddWithValue("$ch", channel);
+                delete.Parameters.AddWithValue("$from", rangeStart);
+                delete.Parameters.AddWithValue("$to", rangeEnd);
+                delete.ExecuteNonQuery();
+            }
+
+            using var insert = conn.CreateCommand();
+            insert.CommandText =
+                "INSERT OR REPLACE INTO epg_import_programs (channel, title, start_at, end_at, source, genre_code, genre_name) " +
+                "VALUES ($ch, $title, $start, $end, $source, $genre_code, $genre_name)";
+            var pCh = insert.Parameters.Add("$ch", SqliteType.Text);
+            var pTitle = insert.Parameters.Add("$title", SqliteType.Text);
+            var pStart = insert.Parameters.Add("$start", SqliteType.Integer);
+            var pEnd = insert.Parameters.Add("$end", SqliteType.Integer);
+            var pSource = insert.Parameters.Add("$source", SqliteType.Text);
+            var pGenreCode = insert.Parameters.Add("$genre_code", SqliteType.Text);
+            var pGenreName = insert.Parameters.Add("$genre_name", SqliteType.Text);
+
+            pCh.Value = channel;
+            foreach (var p in programs)
+            {
+                pTitle.Value = p.Title;
+                pStart.Value = p.StartAt.ToUnixTimeSeconds();
+                pEnd.Value = p.EndAt.ToUnixTimeSeconds();
+                pSource.Value = p.Source;
+                pGenreCode.Value = (object?)p.GenreCode ?? DBNull.Value;
+                pGenreName.Value = (object?)p.GenreName ?? DBNull.Value;
+                insert.ExecuteNonQuery();
+            }
+
+            tx.Commit();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[EpgStorage] インポートEPGデータの保存に失敗しました: channel={Channel}", channel);
+        }
+    }
+
     public (DateTimeOffset? Earliest, DateTimeOffset? Latest) GetDateRange()
     {
         if (!File.Exists(_dbPath)) return (null, null);
@@ -109,6 +164,11 @@ public sealed class EpgStorageService : BackgroundService
         }
 
         return result;
+    }
+
+    public Dictionary<string, List<EpgProgram>> QueryImportedPrograms(DateTimeOffset from, DateTimeOffset to)
+    {
+        return QueryProgramsCore("epg_import_programs", from, to);
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -186,7 +246,60 @@ public sealed class EpgStorageService : BackgroundService
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_channel_start ON epg_programs(channel, start_at);
             CREATE INDEX IF NOT EXISTS idx_epg_end ON epg_programs(end_at);
+
+            CREATE TABLE IF NOT EXISTS epg_import_programs (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel    TEXT    NOT NULL,
+                title      TEXT    NOT NULL,
+                start_at   INTEGER NOT NULL,
+                end_at     INTEGER NOT NULL,
+                source     TEXT    NOT NULL,
+                genre_code TEXT,
+                genre_name TEXT
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_import_channel_start ON epg_import_programs(channel, start_at);
+            CREATE INDEX IF NOT EXISTS idx_epg_import_end ON epg_import_programs(end_at);
             """;
         cmd.ExecuteNonQuery();
+    }
+
+    private Dictionary<string, List<EpgProgram>> QueryProgramsCore(string tableName, DateTimeOffset from, DateTimeOffset to)
+    {
+        var result = new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal);
+        if (!File.Exists(_dbPath)) return result;
+
+        try
+        {
+            using var conn = OpenConnection(readOnly: true);
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText =
+                $"SELECT channel, title, start_at, end_at, source, genre_code, genre_name " +
+                $"FROM {tableName} WHERE end_at > $from AND start_at < $to " +
+                $"ORDER BY channel, start_at";
+            cmd.Parameters.AddWithValue("$from", from.ToUnixTimeSeconds());
+            cmd.Parameters.AddWithValue("$to", to.ToUnixTimeSeconds());
+
+            using var reader = cmd.ExecuteReader();
+            while (reader.Read())
+            {
+                var channel = reader.GetString(0);
+                var title = reader.GetString(1);
+                var startAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2));
+                var endAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(3));
+                var source = reader.GetString(4);
+                var genreCode = reader.IsDBNull(5) ? null : reader.GetString(5);
+                var genreName = reader.IsDBNull(6) ? null : reader.GetString(6);
+
+                if (!result.TryGetValue(channel, out var list))
+                    result[channel] = list = new List<EpgProgram>();
+                list.Add(new EpgProgram(title, startAt, endAt, source, genreCode, genreName));
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[EpgStorage] EPGデータの取得に失敗しました: table={Table}", tableName);
+        }
+
+        return result;
     }
 }

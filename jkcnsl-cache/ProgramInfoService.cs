@@ -24,6 +24,8 @@ public sealed class ProgramInfoService : BackgroundService
     private DateOnly? _loadedAtxBroadcastDate;
     private DateOnly? _loadedOujBroadcastDate;
     private DateOnly? _loadedBs4SubChannelBroadcastDate;
+    private DateOnly? _loadedBsTbsSubChannelBroadcastDate;
+    private DateOnly? _loadedBsFujiSubChannelBroadcastDate;
     private DateTimeOffset _lastFetchUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastRefreshFailureUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastNhkFetchUtc = DateTimeOffset.MinValue;
@@ -34,6 +36,10 @@ public sealed class ProgramInfoService : BackgroundService
     private DateTimeOffset _lastOujAttemptUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastBs4SubChannelFetchUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastBs4SubChannelAttemptUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastBsTbsSubChannelFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastBsTbsSubChannelAttemptUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastBsFujiSubChannelFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastBsFujiSubChannelAttemptUtc = DateTimeOffset.MinValue;
     private bool _hasBroadcastSnapshot;
 
     private static readonly IReadOnlyDictionary<string, TVerBroadcasterInfo> JikkyoToTVer = new Dictionary<string, TVerBroadcasterInfo>
@@ -167,6 +173,9 @@ public sealed class ProgramInfoService : BackgroundService
                 cacheUpdatedAt = DateTimeOffset.MinValue;
             }
         }
+
+        if (OverlayImportedPrograms(epgPrograms, rangeStart, rangeEnd))
+            loaded = true;
 
         return new
         {
@@ -370,6 +379,70 @@ public sealed class ProgramInfoService : BackgroundService
             CopyExistingBs4SubChannelPrograms(broadcastDate, newEpgPrograms);
         }
 
+        var bsTbsRefreshInterval = TimeSpan.FromSeconds(Math.Max(3600,
+            _config.GetValue<int>("CacheServer:BsTbsSubChannelProgram:UpdateIntervalSeconds", 21600)));
+        var bsTbsFailureRetryInterval = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:BsTbsSubChannelProgram:FailureRetrySeconds", 1800)));
+        if (_config.GetValue<bool>("CacheServer:BsTbsSubChannelProgram:Enabled", true) &&
+            (_loadedBsTbsSubChannelBroadcastDate != broadcastDate || now - _lastBsTbsSubChannelFetchUtc >= bsTbsRefreshInterval))
+        {
+            if (now - _lastBsTbsSubChannelAttemptUtc >= bsTbsFailureRetryInterval)
+            {
+                _lastBsTbsSubChannelAttemptUtc = now;
+                if (await FetchBsTbsSubChannelProgramsAsync(broadcastDate, newEpgPrograms, ct))
+                {
+                    _loadedBsTbsSubChannelBroadcastDate = broadcastDate;
+                    _lastBsTbsSubChannelFetchUtc = now;
+                }
+                else
+                {
+                    CopyExistingBsTbsSubChannelPrograms(broadcastDate, newEpgPrograms);
+                }
+            }
+            else
+            {
+                CopyExistingBsTbsSubChannelPrograms(broadcastDate, newEpgPrograms);
+            }
+        }
+        else
+        {
+            CopyExistingBsTbsSubChannelPrograms(broadcastDate, newEpgPrograms);
+        }
+
+        var bsFujiRefreshInterval = TimeSpan.FromSeconds(Math.Max(3600,
+            _config.GetValue<int>("CacheServer:BsFujiSubChannelProgram:UpdateIntervalSeconds", 21600)));
+        var bsFujiFailureRetryInterval = TimeSpan.FromSeconds(Math.Max(300,
+            _config.GetValue<int>("CacheServer:BsFujiSubChannelProgram:FailureRetrySeconds", 1800)));
+        if (_config.GetValue<bool>("CacheServer:BsFujiSubChannelProgram:Enabled", true) &&
+            (_loadedBsFujiSubChannelBroadcastDate != broadcastDate || now - _lastBsFujiSubChannelFetchUtc >= bsFujiRefreshInterval))
+        {
+            if (now - _lastBsFujiSubChannelAttemptUtc >= bsFujiFailureRetryInterval)
+            {
+                _lastBsFujiSubChannelAttemptUtc = now;
+                if (await FetchBsFujiSubChannelProgramsAsync(broadcastDate, newEpgPrograms, ct))
+                {
+                    _loadedBsFujiSubChannelBroadcastDate = broadcastDate;
+                    _lastBsFujiSubChannelFetchUtc = now;
+                }
+                else
+                {
+                    CopyExistingBsFujiSubChannelPrograms(broadcastDate, newEpgPrograms);
+                }
+            }
+            else
+            {
+                CopyExistingBsFujiSubChannelPrograms(broadcastDate, newEpgPrograms);
+            }
+        }
+        else
+        {
+            CopyExistingBsFujiSubChannelPrograms(broadcastDate, newEpgPrograms);
+        }
+
+        OverlayImportedPrograms(newEpgPrograms,
+            CreateBroadcastBoundary(broadcastDate),
+            CreateBroadcastBoundary(broadcastDate.AddDays(2)));
+
         lock (_lock)
         {
             _epgPrograms.Clear();
@@ -386,6 +459,38 @@ public sealed class ProgramInfoService : BackgroundService
 
         _logger.LogDebug("[ProgramInfo] EPG を更新しました: {Date}-{NextDate} ({Count} channels)",
             broadcastDate, broadcastDate.AddDays(1), newEpgPrograms.Count);
+    }
+
+    public async Task<(int ImportedCount, bool CurrentChanged)> ImportProgramsAsync(
+        string channel,
+        IReadOnlyList<EpgProgram> programs,
+        CancellationToken ct)
+    {
+        var normalized = programs
+            .Where(program => !string.IsNullOrWhiteSpace(program.Title) && program.EndAt > program.StartAt)
+            .OrderBy(program => program.StartAt)
+            .ToList();
+        if (normalized.Count == 0)
+            return (0, false);
+
+        _epgStorage.ReplaceImportedPrograms(channel, normalized);
+
+        var imported = new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal)
+        {
+            [channel] = normalized
+        };
+        lock (_lock)
+        {
+            OverlayProgramMap(_epgPrograms, imported);
+        }
+
+        var changed = EvaluateCurrentPrograms(DateTimeOffset.UtcNow);
+        if (changed)
+            await _broadcaster.BroadcastAsync(CreateProgramsPayload(), ct);
+
+        _logger.LogInformation("[ProgramInfo] 外部EPGを取り込みました: channel={Channel} count={Count} start={Start} end={End}",
+            channel, normalized.Count, normalized.First().StartAt, normalized.Last().EndAt);
+        return (normalized.Count, changed);
     }
 
     private async Task<bool> DelayIfEpgUpdateAvoidWindowAsync(DateTimeOffset nowUtc, CancellationToken ct)
@@ -483,6 +588,43 @@ public sealed class ProgramInfoService : BackgroundService
         list.AddRange(programs);
     }
 
+    private bool OverlayImportedPrograms(Dictionary<string, List<EpgProgram>> epgPrograms,
+        DateTimeOffset from, DateTimeOffset to)
+    {
+        var importedPrograms = _epgStorage.QueryImportedPrograms(from, to);
+        if (importedPrograms.Count == 0)
+            return false;
+
+        OverlayProgramMap(epgPrograms, importedPrograms);
+        return true;
+    }
+
+    private static void OverlayProgramMap(Dictionary<string, List<EpgProgram>> basePrograms,
+        IReadOnlyDictionary<string, List<EpgProgram>> importedPrograms)
+    {
+        foreach (var (channel, overlayPrograms) in importedPrograms)
+        {
+            if (overlayPrograms.Count == 0)
+                continue;
+
+            var rangeStart = overlayPrograms.Min(program => program.StartAt);
+            var rangeEnd = overlayPrograms.Max(program => program.EndAt);
+
+            if (!basePrograms.TryGetValue(channel, out var existingPrograms))
+                existingPrograms = new List<EpgProgram>();
+            else
+                existingPrograms = existingPrograms
+                    .Where(program => program.EndAt <= rangeStart || program.StartAt >= rangeEnd)
+                    .ToList();
+
+            existingPrograms.AddRange(overlayPrograms);
+            basePrograms[channel] = existingPrograms
+                .OrderBy(program => program.StartAt)
+                .ThenBy(program => program.EndAt)
+                .ToList();
+        }
+    }
+
     private IReadOnlyDictionary<string, TVerBroadcasterInfo> CreateTVerProgramMap()
     {
         var map = new Dictionary<string, TVerBroadcasterInfo>(JikkyoToTVer, StringComparer.Ordinal);
@@ -563,6 +705,32 @@ public sealed class ProgramInfoService : BackgroundService
             return;
 
         var channelVideo = _config["CacheServer:Bs4SubChannelProgram:ChannelVideo"] ?? "jk142";
+        lock (_lock)
+        {
+            if (_epgPrograms.TryGetValue(channelVideo, out var programs))
+                epgPrograms[channelVideo] = programs;
+        }
+    }
+
+    private void CopyExistingBsTbsSubChannelPrograms(DateOnly broadcastDate, Dictionary<string, List<EpgProgram>> epgPrograms)
+    {
+        if (_loadedBsTbsSubChannelBroadcastDate != broadcastDate)
+            return;
+
+        var channelVideo = _config["CacheServer:BsTbsSubChannelProgram:ChannelVideo"] ?? "jk162";
+        lock (_lock)
+        {
+            if (_epgPrograms.TryGetValue(channelVideo, out var programs))
+                epgPrograms[channelVideo] = programs;
+        }
+    }
+
+    private void CopyExistingBsFujiSubChannelPrograms(DateOnly broadcastDate, Dictionary<string, List<EpgProgram>> epgPrograms)
+    {
+        if (_loadedBsFujiSubChannelBroadcastDate != broadcastDate)
+            return;
+
+        var channelVideo = _config["CacheServer:BsFujiSubChannelProgram:ChannelVideo"] ?? "jk182";
         lock (_lock)
         {
             if (_epgPrograms.TryGetValue(channelVideo, out var programs))
@@ -669,6 +837,112 @@ public sealed class ProgramInfoService : BackgroundService
         {
             _logger.LogWarning(ex, "[ProgramInfo] BS日テレサブチャンネル番組表取得に失敗しました: channel={Channel} url={Url}",
                 channelVideo, url);
+            return false;
+        }
+    }
+
+    private async Task<bool> FetchBsTbsSubChannelProgramsAsync(DateOnly broadcastDate,
+        Dictionary<string, List<EpgProgram>> epgPrograms, CancellationToken ct)
+    {
+        var url = _config["CacheServer:BsTbsSubChannelProgram:TablePageUrl"] ??
+            "https://rakuraku2.bangumi.org/tablePage";
+        var pageUrl = _config["CacheServer:BsTbsSubChannelProgram:PageUrl"] ??
+            "https://bs.tbs.co.jp/epg_2k.html";
+        var referer = _config["CacheServer:BsTbsSubChannelProgram:Referer"] ?? "bs.tbs.co.jp";
+        var channelIndex = _config["CacheServer:BsTbsSubChannelProgram:ChannelIndex"] ?? "3";
+        var channelVideo = _config["CacheServer:BsTbsSubChannelProgram:ChannelVideo"] ?? "jk162";
+
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = new FormUrlEncodedContent(new Dictionary<string, string>
+                {
+                    ["platform"] = "D",
+                    ["isSamplePage"] = "false",
+                    ["referer"] = referer,
+                    ["channelIndex"] = channelIndex,
+                }),
+            };
+            request.Headers.TryAddWithoutValidation("Origin", "https://bs.tbs.co.jp");
+            request.Headers.TryAddWithoutValidation("Referer", pageUrl);
+            request.Headers.TryAddWithoutValidation("Accept", "text/html, */*; q=0.1");
+
+            _logger.LogDebug("[ProgramInfo] BS-TBSサブチャンネル番組表を取得します: channel={Channel} url={Url}",
+                channelVideo, url);
+            using var response = await _http.SendAsync(request, ct);
+            response.EnsureSuccessStatusCode();
+
+            var html = await response.Content.ReadAsStringAsync(ct);
+            var programs = ParseRakurakuSubChannelPrograms(html, "bstbs-subchannel");
+            if (programs.Count == 0)
+            {
+                _logger.LogWarning("[ProgramInfo] BS-TBSサブチャンネル番組表の解析結果が0件です: channel={Channel}",
+                    channelVideo);
+                return false;
+            }
+
+            epgPrograms[channelVideo] = programs;
+            _logger.LogInformation("[ProgramInfo] BS-TBSサブチャンネル番組表を更新しました: channel={Channel} count={Count} date={Date}",
+                channelVideo, programs.Count, broadcastDate);
+            return true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ProgramInfo] BS-TBSサブチャンネル番組表取得に失敗しました: channel={Channel} url={Url}",
+                channelVideo, url);
+            return false;
+        }
+    }
+
+    private async Task<bool> FetchBsFujiSubChannelProgramsAsync(DateOnly broadcastDate,
+        Dictionary<string, List<EpgProgram>> epgPrograms, CancellationToken ct)
+    {
+        var nowTodayUrl = _config["CacheServer:BsFujiSubChannelProgram:NowTodayUrl"] ??
+            "https://www.bsfuji.tv/top/timetable/epg/2K/now_today.txt";
+        var jsonBaseUrl = _config["CacheServer:BsFujiSubChannelProgram:JsonBaseUrl"] ??
+            "https://www.bsfuji.tv/top/timetable/epg/2K/json";
+        var channelVideo = _config["CacheServer:BsFujiSubChannelProgram:ChannelVideo"] ?? "jk182";
+        var channelNumber = _config["CacheServer:BsFujiSubChannelProgram:ChannelNumber"] ?? "182";
+
+        try
+        {
+            _logger.LogDebug("[ProgramInfo] BSフジサブチャンネル日付情報を取得します: url={Url}", nowTodayUrl);
+            var todayText = (await _http.GetStringAsync(nowTodayUrl, ct)).Trim();
+            if (!Regex.IsMatch(todayText, @"^\d{8}$"))
+            {
+                _logger.LogWarning("[ProgramInfo] BSフジサブチャンネル日付情報の形式が不正です: value={Value}", todayText);
+                return false;
+            }
+
+            var jsonTexts = new List<string>();
+            foreach (var page in new[] { 1, 2 })
+            {
+                var jsonUrl = $"{jsonBaseUrl.TrimEnd('/')}/{todayText}_{page}.json";
+                _logger.LogDebug("[ProgramInfo] BSフジサブチャンネル番組表JSONを取得します: channel={Channel} url={Url}",
+                    channelVideo, jsonUrl);
+                jsonTexts.Add(await _http.GetStringAsync(jsonUrl, ct));
+            }
+
+            var programs = ParseBsFujiSubChannelPrograms(jsonTexts, channelNumber);
+            if (programs.Count == 0)
+            {
+                _logger.LogWarning("[ProgramInfo] BSフジサブチャンネル番組表の解析結果が0件です: channel={Channel}",
+                    channelVideo);
+                return false;
+            }
+
+            epgPrograms[channelVideo] = programs;
+            _logger.LogInformation("[ProgramInfo] BSフジサブチャンネル番組表を更新しました: channel={Channel} count={Count} date={Date}",
+                channelVideo, programs.Count, broadcastDate);
+            return true;
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[ProgramInfo] BSフジサブチャンネル番組表取得に失敗しました: channel={Channel} nowTodayUrl={NowTodayUrl}",
+                channelVideo, nowTodayUrl);
             return false;
         }
     }
@@ -998,6 +1272,9 @@ public sealed class ProgramInfoService : BackgroundService
     }
 
     private List<EpgProgram> ParseBs4SubChannelPrograms(string html, string channelVideo)
+        => ParseRakurakuSubChannelPrograms(html, "bs4-subchannel");
+
+    private List<EpgProgram> ParseRakurakuSubChannelPrograms(string html, string source)
     {
         var broadcastDates = Regex.Matches(html, @"data-date-string=""(?<date>\d{8})""",
                 RegexOptions.Singleline | RegexOptions.IgnoreCase)
@@ -1017,16 +1294,30 @@ public sealed class ProgramInfoService : BackgroundService
         var dayCount = Math.Min(broadcastDates.Length, dayBlocks.Length);
         for (var dayIndex = 0; dayIndex < dayCount; dayIndex++)
         {
-            var starts = new List<(DateTimeOffset StartAt, string Title, string? GenreCode, string? GenreName)>();
+            var rows = new List<RakurakuProgramRow>();
             foreach (Match itemMatch in Regex.Matches(dayBlocks[dayIndex],
                          @"<li\b[^>]*data-program=""[^""]*""[^>]*>(?<body>.*?)</li>",
                          RegexOptions.Singleline | RegexOptions.IgnoreCase))
             {
+                var attrs = itemMatch.Value;
                 var body = itemMatch.Groups["body"].Value;
-                var href = Regex.Match(body, @"<a\b[^>]*href=""(?<href>[^""]+)""",
-                    RegexOptions.Singleline | RegexOptions.IgnoreCase).Groups["href"].Value;
+                var height = 0;
+                var heightMatch = Regex.Match(attrs, @"height:\s*(?<height>\d+)px",
+                    RegexOptions.IgnoreCase);
+                if (heightMatch.Success)
+                    int.TryParse(heightMatch.Groups["height"].Value, out height);
+
                 var time = ExtractHtmlText(body, "time");
                 var title = NormalizeTitle(ExtractHtmlText(body, "title"));
+                var isDummy = attrs.Contains("dummy", StringComparison.OrdinalIgnoreCase);
+                if (isDummy)
+                {
+                    rows.Add(new RakurakuProgramRow(null, null, null, null, Math.Max(1, height), true));
+                    continue;
+                }
+
+                var href = Regex.Match(body, @"<a\b[^>]*href=""(?<href>[^""]+)""",
+                    RegexOptions.Singleline | RegexOptions.IgnoreCase).Groups["href"].Value;
                 if (string.IsNullOrWhiteSpace(href) ||
                     string.IsNullOrWhiteSpace(time) ||
                     string.IsNullOrWhiteSpace(title) ||
@@ -1036,33 +1327,149 @@ public sealed class ProgramInfoService : BackgroundService
                 var category = NormalizeTitle(ExtractHtmlText(body, "categoryt"));
                 var genreCode = GenreCodeFromBs4Category(category);
                 var startAt = CreateBs4StartTime(broadcastDates[dayIndex], hour, minute);
-                starts.Add((startAt, title, genreCode, GenreName(genreCode)));
+                rows.Add(new RakurakuProgramRow(startAt, title, genreCode, GenreName(genreCode), Math.Max(1, height), false));
             }
 
-            var ordered = starts
-                .GroupBy(program => (program.Title, program.StartAt))
-                .Select(group => group.First())
-                .OrderBy(program => program.StartAt)
+            var ordered = rows
+                .Where(row => row.IsDummy || row.StartAt is not null)
                 .ToArray();
-            for (var i = 0; i < ordered.Length; i++)
+            var programIndices = ordered
+                .Select((row, index) => (row, index))
+                .Where(entry => !entry.row.IsDummy && entry.row.StartAt is not null && !string.IsNullOrWhiteSpace(entry.row.Title))
+                .Select(entry => entry.index)
+                .ToArray();
+
+            for (var i = 0; i < programIndices.Length; i++)
             {
-                var endAt = i + 1 < ordered.Length
-                    ? ordered[i + 1].StartAt
+                var currentIndex = programIndices[i];
+                var current = ordered[currentIndex];
+                var startAt = current.StartAt!.Value;
+
+                var nextIndex = i + 1 < programIndices.Length
+                    ? programIndices[i + 1]
+                    : ordered.Length;
+                var nextStartAt = i + 1 < programIndices.Length
+                    ? ordered[nextIndex].StartAt!.Value
                     : CreateBs4BroadcastBoundary(broadcastDates[dayIndex].AddDays(1));
-                if (endAt <= ordered[i].StartAt)
+
+                DateTimeOffset endAt;
+                var segment = ordered[currentIndex..nextIndex];
+                if (segment.Length > 1)
+                {
+                    var totalHeight = segment.Sum(row => Math.Max(1, row.Height));
+                    var totalSeconds = (nextStartAt - startAt).TotalSeconds;
+                    if (totalHeight > 0 && totalSeconds > 0)
+                    {
+                        var currentSeconds = totalSeconds * Math.Max(1, current.Height) / totalHeight;
+                        endAt = startAt.AddSeconds(currentSeconds);
+                    }
+                    else
+                    {
+                        endAt = nextStartAt;
+                    }
+                }
+                else
+                {
+                    endAt = nextStartAt;
+                }
+
+                if (endAt <= startAt)
                     continue;
 
                 programs.Add(new EpgProgram(
-                    ordered[i].Title,
-                    ordered[i].StartAt,
+                    current.Title!,
+                    startAt,
                     endAt,
-                    "bs4-subchannel",
-                    ordered[i].GenreCode,
-                    ordered[i].GenreName));
+                    source,
+                    current.GenreCode,
+                    current.GenreName));
             }
         }
 
         return programs.OrderBy(program => program.StartAt).ToList();
+    }
+
+    private sealed record RakurakuProgramRow(
+        DateTimeOffset? StartAt,
+        string? Title,
+        string? GenreCode,
+        string? GenreName,
+        int Height,
+        bool IsDummy);
+
+    private List<EpgProgram> ParseBsFujiSubChannelPrograms(IEnumerable<string> jsonTexts, string channelNumber)
+    {
+        var programs = new List<EpgProgram>();
+
+        foreach (var jsonText in jsonTexts)
+        {
+            using var doc = JsonDocument.Parse(jsonText);
+            if (!doc.RootElement.TryGetProperty("days", out var days) ||
+                days.ValueKind != JsonValueKind.Array)
+                continue;
+
+            foreach (var day in days.EnumerateArray())
+            {
+                var dateText = GetStringProperty(day, "date");
+                if (!DateOnly.TryParseExact(dateText, "yyyyMMdd", out var date))
+                    continue;
+                if (!day.TryGetProperty("info", out var infoArray) ||
+                    infoArray.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                JsonElement? targetInfo = null;
+                foreach (var info in infoArray.EnumerateArray())
+                {
+                    if (GetStringProperty(info, "ch") == channelNumber)
+                    {
+                        targetInfo = info;
+                        break;
+                    }
+                }
+
+                if (targetInfo is not JsonElement infoElement ||
+                    !infoElement.TryGetProperty("program", out var programArray) ||
+                    programArray.ValueKind != JsonValueKind.Array)
+                    continue;
+
+                foreach (var program in programArray.EnumerateArray())
+                {
+                    var title = NormalizeTitle(GetStringProperty(program, "title"));
+                    if (string.IsNullOrWhiteSpace(title))
+                        continue;
+
+                    var startHourText = GetStringProperty(program, "start_hour");
+                    var startMinText = GetStringProperty(program, "start_min");
+                    var endTimeText = GetStringProperty(program, "end_time");
+                    if (!int.TryParse(startHourText, out var startHour) ||
+                        !int.TryParse(startMinText, out var startMinute) ||
+                        !TryParseCompactTime(endTimeText, out var endHour, out var endMinute))
+                        continue;
+
+                    var startAt = CreateBsFujiStartTime(date, startHour, startMinute);
+                    var endAt = CreateBsFujiStartTime(date, endHour, endMinute);
+                    if (endAt <= startAt)
+                        continue;
+
+                    var genreCode = GenreCodeFromBsFujiCategory(
+                        GetStringProperty(program, "genre_name"),
+                        GetStringProperty(program, "genre"));
+                    programs.Add(new EpgProgram(
+                        title,
+                        startAt,
+                        endAt,
+                        "bsfuji-subchannel",
+                        genreCode,
+                        GenreName(genreCode)));
+                }
+            }
+        }
+
+        return programs
+            .GroupBy(program => (program.Title, program.StartAt))
+            .Select(group => group.First())
+            .OrderBy(program => program.StartAt)
+            .ToList();
     }
 
     private List<EpgProgram> ParseAtxPrograms(string html)
@@ -1220,6 +1627,18 @@ public sealed class ProgramInfoService : BackgroundService
         if (parts.Length == 2 &&
             int.TryParse(parts[0], out hour) &&
             int.TryParse(parts[1], out minute))
+            return true;
+
+        hour = 0;
+        minute = 0;
+        return false;
+    }
+
+    private static bool TryParseCompactTime(string text, out int hour, out int minute)
+    {
+        if (text.Length == 4 &&
+            int.TryParse(text[..2], out hour) &&
+            int.TryParse(text[2..], out minute))
             return true;
 
         hour = 0;
@@ -1520,6 +1939,47 @@ public sealed class ProgramInfoService : BackgroundService
         _ => null,
     };
 
+    private string? GenreCodeFromBsFujiCategory(string categoryName, string categoryCode)
+    {
+        categoryName = categoryName.Trim();
+        categoryCode = categoryCode.Trim().ToLowerInvariant();
+
+        if (!string.IsNullOrWhiteSpace(categoryName))
+        {
+            var code = categoryName switch
+            {
+                "報道・情報" or "ニュース" => "0x0",
+                "スポーツ" => "0x1",
+                "情報" or "ワイドショー" => "0x2",
+                "ドラマ" => "0x3",
+                "音楽" => "0x4",
+                "バラエティ" => "0x5",
+                "映画" => "0x6",
+                "アニメ・キッズ" or "アニメ" or "特撮" => "0x7",
+                "ドキュメンタリー・教養" or "ドキュメンタリー" or "教養" => "0x8",
+                "趣味・教育" or "趣味" or "教育" => "0xA",
+                _ => null,
+            };
+            if (code != null)
+                return code;
+        }
+
+        return categoryCode switch
+        {
+            "news" => "0x0",
+            "sports" => "0x1",
+            "info" => "0x2",
+            "drama" => "0x3",
+            "music" => "0x4",
+            "variety" => "0x5",
+            "movie" => "0x6",
+            "anime" or "kids" => "0x7",
+            "documentary" or "culture" => "0x8",
+            "education" => "0xA",
+            _ => null,
+        };
+    }
+
     private DateTimeOffset CreateBs4StartTime(DateOnly date, int hour, int minute)
     {
         if (hour < 4)
@@ -1537,6 +1997,20 @@ public sealed class ProgramInfoService : BackgroundService
     private DateTimeOffset CreateBs4BroadcastBoundary(DateOnly date)
     {
         var local = date.ToDateTime(new TimeOnly(4, 0));
+        return new DateTimeOffset(local, _timeZone.GetUtcOffset(local));
+    }
+
+    private DateTimeOffset CreateBsFujiStartTime(DateOnly date, int hour, int minute)
+    {
+        if (hour < 5)
+            date = date.AddDays(1);
+        while (hour >= 24)
+        {
+            date = date.AddDays(1);
+            hour -= 24;
+        }
+
+        var local = date.ToDateTime(new TimeOnly(hour, minute));
         return new DateTimeOffset(local, _timeZone.GetUtcOffset(local));
     }
 

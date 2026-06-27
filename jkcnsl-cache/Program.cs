@@ -2,6 +2,7 @@ using jkcnsl_cache;
 using System.Globalization;
 using System.Net.WebSockets;
 using System.Security;
+using System.Security.Cryptography;
 using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -296,6 +297,94 @@ app.MapGet("/api/programs/schedule", (HttpContext ctx, ProgramInfoService progra
     return Results.Json(programInfoService.CreateSchedulePayload(broadcastDate));
 }).CacheOutput(p => p.Expire(TimeSpan.FromSeconds(30)).SetVaryByQuery("date"));
 
+// 外部EPG取り込み API（メインポートのみ）
+app.MapPost("/api/admin/epg/import", async (
+    HttpContext ctx,
+    ProgramInfoService programInfoService,
+    IConfiguration config,
+    ILogger<Program> logger) =>
+{
+    if (mainPort != statusPort && ctx.Connection.LocalPort != mainPort)
+        return Results.NotFound();
+
+    if (!config.GetValue("CacheServer:EpgImport:Enabled", true))
+        return Results.NotFound();
+
+    var configuredApiKey = config["CacheServer:EpgImport:ApiKey"];
+    if (string.IsNullOrWhiteSpace(configuredApiKey))
+        return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+    var requestApiKey = ctx.Request.Headers["X-API-Key"].ToString();
+    if (!ApiKeysEqual(requestApiKey, configuredApiKey))
+        return Results.Unauthorized();
+
+    var body = await ctx.Request.ReadFromJsonAsync<EpgImportRequest>(cancellationToken: ctx.RequestAborted);
+    if (body is null || string.IsNullOrWhiteSpace(body.Channel))
+        return Results.BadRequest(new { error = "channel は必須です" });
+    if (body.Programs is null || body.Programs.Count == 0)
+        return Results.BadRequest(new { error = "programs は1件以上必要です" });
+
+    var source = string.IsNullOrWhiteSpace(body.Source) ? "airwave" : body.Source.Trim();
+    var programs = new List<EpgProgram>();
+    var errors = new List<string>();
+
+    for (var i = 0; i < body.Programs.Count; i++)
+    {
+        var program = body.Programs[i];
+        if (program is null)
+        {
+            errors.Add($"programs[{i}] が null です");
+            continue;
+        }
+        if (string.IsNullOrWhiteSpace(program.Title))
+        {
+            errors.Add($"programs[{i}].title は必須です");
+            continue;
+        }
+        if (!DateTimeOffset.TryParse(program.StartAt, out var startAt))
+        {
+            errors.Add($"programs[{i}].startAt の形式が不正です");
+            continue;
+        }
+        if (!DateTimeOffset.TryParse(program.EndAt, out var endAt))
+        {
+            errors.Add($"programs[{i}].endAt の形式が不正です");
+            continue;
+        }
+        if (endAt <= startAt)
+        {
+            errors.Add($"programs[{i}] は endAt が startAt より後である必要があります");
+            continue;
+        }
+
+        programs.Add(new EpgProgram(
+            program.Title.Trim(),
+            startAt,
+            endAt,
+            source,
+            string.IsNullOrWhiteSpace(program.GenreCode) ? null : program.GenreCode.Trim(),
+            string.IsNullOrWhiteSpace(program.GenreName) ? null : program.GenreName.Trim()));
+    }
+
+    if (errors.Count > 0)
+        return Results.BadRequest(new { error = "入力に誤りがあります", details = errors });
+
+    var (importedCount, currentChanged) = await programInfoService.ImportProgramsAsync(
+        body.Channel.Trim(), programs, ctx.RequestAborted);
+
+    logger.LogInformation("外部EPG APIで取り込みました: channel={Channel} source={Source} count={Count}",
+        body.Channel.Trim(), source, importedCount);
+
+    return Results.Json(new
+    {
+        ok = true,
+        channel = body.Channel.Trim(),
+        source,
+        importedCount,
+        currentChanged
+    });
+});
+
 // 勢いリスト（getchannels 互換 XML、2秒キャッシュ）
 app.MapGet("/api/channels", (ChannelManager mgr, ChannelCatalog channelCatalog) =>
 {
@@ -382,6 +471,14 @@ app.MapPost("/api/login/mfa", async (HttpContext ctx, ILogger<Program> logger) =
 });
 
 app.Run();
+
+static bool ApiKeysEqual(string left, string right)
+{
+    var leftBytes = Encoding.UTF8.GetBytes(left);
+    var rightBytes = Encoding.UTF8.GetBytes(right);
+    return leftBytes.Length == rightBytes.Length &&
+        CryptographicOperations.FixedTimeEquals(leftBytes, rightBytes);
+}
 
 static DateOnly ToBroadcastDate(DateTimeOffset utc, TimeZoneInfo timeZone)
 {
@@ -603,3 +700,16 @@ record ChannelSourceStatus(
 
 record NicovideoLoginRequest(string Email, string Password, string? MfaTrustedDeviceToken = null);
 record NicovideoMfaRequest(string MfaToken, string Otp, bool TrustDevice = true);
+
+sealed record EpgImportRequest(
+    string Channel,
+    string? Source,
+    string? CapturedAt,
+    List<EpgImportProgramRequest> Programs);
+
+sealed record EpgImportProgramRequest(
+    string Title,
+    string StartAt,
+    string EndAt,
+    string? GenreCode,
+    string? GenreName);
