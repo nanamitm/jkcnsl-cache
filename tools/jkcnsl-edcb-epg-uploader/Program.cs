@@ -345,9 +345,11 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             WrapContents = true
         };
+        var mappingToolTip = new ToolTip();
 
         var addButton = new Button { Text = "追加", AutoSize = true };
-        addButton.Click += (_, _) => _serviceMappings.Add(new ServiceMappingRow { Enabled = true });
+        addButton.Click += async (_, _) => await ImportFromEdcbAsync();
+        mappingToolTip.SetToolTip(addButton, "EDCB のサービス一覧から送信対象チャンネルを追加します。");
         mappingButtons.Controls.Add(addButton);
 
         var removeMappingButton = new Button { Text = "削除", AutoSize = true };
@@ -361,14 +363,6 @@ internal sealed class SettingsForm : Form
         var downButton = new Button { Text = "下へ", AutoSize = true };
         downButton.Click += (_, _) => MoveSelectedMapping(1);
         mappingButtons.Controls.Add(downButton);
-
-        var addDefaultsButton = new Button { Text = "既定値を追加", AutoSize = true };
-        addDefaultsButton.Click += (_, _) => AddDefaultMappings();
-        mappingButtons.Controls.Add(addDefaultsButton);
-
-        var importFromEdcbButton = new Button { Text = "EDCBから候補取得", AutoSize = true };
-        importFromEdcbButton.Click += async (_, _) => await ImportFromEdcbAsync();
-        mappingButtons.Controls.Add(importFromEdcbButton);
 
         var autofillVideoButton = new Button { Text = "videoを自動補完", AutoSize = true };
         autofillVideoButton.Click += (_, _) => AutofillVideoNames();
@@ -401,19 +395,22 @@ internal sealed class SettingsForm : Form
         {
             DataPropertyName = nameof(ServiceMappingRow.Onid),
             HeaderText = "ONID",
-            Width = 90
+            Width = 90,
+            ReadOnly = true
         });
         _serviceMappingsGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             DataPropertyName = nameof(ServiceMappingRow.Tsid),
             HeaderText = "TSID",
-            Width = 90
+            Width = 90,
+            ReadOnly = true
         });
         _serviceMappingsGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
             DataPropertyName = nameof(ServiceMappingRow.Sid),
             HeaderText = "SID",
-            Width = 90
+            Width = 90,
+            ReadOnly = true
         });
         _serviceMappingsGrid.Columns.Add(new DataGridViewTextBoxColumn
         {
@@ -671,19 +668,6 @@ internal sealed class SettingsForm : Form
         _serviceMappingsGrid.CurrentCell = _serviceMappingsGrid.Rows[newIndex].Cells[0];
     }
 
-    private void AddDefaultMappings()
-    {
-        foreach (var mapping in GetDefaultServiceMappings())
-        {
-            if (_serviceMappings.Any(x => x.Video.Equals(mapping.Video, StringComparison.OrdinalIgnoreCase)))
-            {
-                continue;
-            }
-
-            _serviceMappings.Add(ServiceMappingRow.FromModel(mapping));
-        }
-    }
-
     private async Task ImportFromEdcbAsync()
     {
         try
@@ -751,11 +735,11 @@ internal sealed class SettingsForm : Form
                 return false;
             }
 
-            if (row.Onid < 0 || row.Onid > ushort.MaxValue ||
-                row.Tsid < 0 || row.Tsid > ushort.MaxValue ||
-                row.Sid < 0 || row.Sid > ushort.MaxValue)
+            if (row.Onid <= 0 || row.Onid > ushort.MaxValue ||
+                row.Tsid <= 0 || row.Tsid > ushort.MaxValue ||
+                row.Sid <= 0 || row.Sid > ushort.MaxValue)
             {
-                message = "ONID / TSID / SID は 0 から 65535 の範囲で入力してください。";
+                message = "ONID / TSID / SID は 1 から 65535 の範囲で設定してください。";
                 return false;
             }
 
@@ -791,14 +775,6 @@ internal sealed class SettingsForm : Form
 
         return true;
     }
-
-    private static List<ServiceMapping> GetDefaultServiceMappings()
-        => new()
-        {
-            new ServiceMapping { Enabled = true, Video = "jk171", Onid = 4, Tsid = 16402, Sid = 171, Memo = "ＢＳテレ東" },
-            new ServiceMapping { Enabled = true, Video = "jk172", Onid = 4, Tsid = 16402, Sid = 172, Memo = "ＢＳテレ東２" },
-            new ServiceMapping { Enabled = true, Video = "jk173", Onid = 4, Tsid = 16402, Sid = 173, Memo = "ＢＳテレ東３" }
-        };
 
     private void AutofillVideoNames()
     {
