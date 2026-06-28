@@ -74,8 +74,8 @@ internal static class Program
                         ConsoleWindow.Hide();
                     }
 
-                    Application.EnableVisualStyles();
-                    Application.SetCompatibleTextRenderingDefault(false);
+                    ApplicationConfiguration.Initialize();
+                    Application.SetColorMode(SystemColorMode.System);
 
                     using var scheduler = new UploadScheduler(configStore, worker, logger);
                     using var context = new TrayApplicationContext(configStore, logger, scheduler, paths.ExecutablePath);
@@ -418,6 +418,7 @@ internal sealed class SettingsForm : Form
             HeaderText = "メモ",
             AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill
         });
+        ApplyServiceMappingsGridTheme();
         _serviceMappingsGrid.CellEndEdit += OnServiceMappingsCellEndEdit;
 
         mappingLayout.Controls.Add(mappingButtons, 0, 0);
@@ -816,6 +817,25 @@ internal sealed class SettingsForm : Form
 
         row.Video = SuggestVideoName(row.Memo, row.Sid);
         _serviceMappings.ResetItem(e.RowIndex);
+    }
+
+    private void ApplyServiceMappingsGridTheme()
+    {
+        _serviceMappingsGrid.EnableHeadersVisualStyles = false;
+
+        if (BackColor.GetBrightness() >= 0.5f)
+        {
+            return;
+        }
+
+        var headerBackColor = Color.FromArgb(48, 48, 48);
+        var headerForeColor = Color.FromArgb(240, 240, 240);
+        _serviceMappingsGrid.BackgroundColor = Color.FromArgb(30, 30, 30);
+        _serviceMappingsGrid.GridColor = Color.FromArgb(62, 62, 62);
+        _serviceMappingsGrid.ColumnHeadersDefaultCellStyle.BackColor = headerBackColor;
+        _serviceMappingsGrid.ColumnHeadersDefaultCellStyle.ForeColor = headerForeColor;
+        _serviceMappingsGrid.ColumnHeadersDefaultCellStyle.SelectionBackColor = headerBackColor;
+        _serviceMappingsGrid.ColumnHeadersDefaultCellStyle.SelectionForeColor = headerForeColor;
     }
 
     private static string SuggestVideoName(string? serviceName, int sid)
