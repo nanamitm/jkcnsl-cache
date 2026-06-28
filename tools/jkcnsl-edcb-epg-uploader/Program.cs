@@ -58,7 +58,7 @@ internal static class Program
                 return 0;
             }
 
-            if (option.Watch)
+            if (args.Length == 0)
             {
                 using var mutexHandle = SingleInstanceGuard.TryAcquire(config.Scheduler.MutexName);
                 if (mutexHandle is null)
@@ -1681,7 +1681,7 @@ internal static class ConsoleMode
             return true;
         }
 
-        return option.Watch && !config.Scheduler.UseTrayIcon;
+        return false;
     }
 
     private static void RebindStandardStreams()
@@ -1697,7 +1697,6 @@ internal sealed class CommandLineOptions
 {
     public bool DryRun { get; private init; }
     public bool ListServices { get; private init; }
-    public bool Watch { get; private init; }
     public bool InstallAutostart { get; private init; }
     public bool UninstallAutostart { get; private init; }
     public string? Channel { get; private init; }
@@ -1714,13 +1713,10 @@ internal sealed class CommandLineOptions
             }
         }
 
-        var hasExplicitMode = args.Length > 0;
-
         return new CommandLineOptions
         {
             DryRun = args.Contains("--dry-run", StringComparer.OrdinalIgnoreCase),
             ListServices = args.Contains("--list-services", StringComparer.OrdinalIgnoreCase),
-            Watch = !hasExplicitMode || args.Contains("--watch", StringComparer.OrdinalIgnoreCase),
             InstallAutostart = args.Contains("--install-autostart", StringComparer.OrdinalIgnoreCase),
             UninstallAutostart = args.Contains("--uninstall-autostart", StringComparer.OrdinalIgnoreCase),
             Channel = channel
