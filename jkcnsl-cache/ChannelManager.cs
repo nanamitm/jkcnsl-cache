@@ -18,6 +18,7 @@ public class ChannelManager
     private readonly ChannelCatalog _channelCatalog;
     private readonly MetricsService _metrics;
     private readonly CommentStorageService _commentStorage;
+    private readonly NicovideoSessionStore _sessionStore;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
 
     private static readonly HttpClient _watchScrapeClient = CreateWatchScrapeClient();
@@ -36,7 +37,8 @@ public class ChannelManager
 
     public ChannelManager(IConfiguration config, ILogger<ChannelManager> logger, ILoggerFactory loggerFactory,
         NicovideoSearchService searchService, LocalStreamConnectionLimiter localStreamLimiter,
-        ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage)
+        ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage,
+        NicovideoSessionStore sessionStore)
     {
         _config = config;
         _logger = logger;
@@ -46,6 +48,7 @@ public class ChannelManager
         _channelCatalog = channelCatalog;
         _metrics = metrics;
         _commentStorage = commentStorage;
+        _sessionStore = sessionStore;
     }
 
     public DateTimeOffset? GetChannelScheduled(string channel) =>
@@ -310,6 +313,12 @@ public class ChannelManager
     public Task RestartChannelAsync(string channel) =>
         _channels.TryGetValue(channel, out var ch) ? ch.RestartAsync() : Task.CompletedTask;
 
+    public Task RestartAuthenticatedNicovideoChannelsAsync() =>
+        Task.WhenAll(_channels
+            .Where(kv => kv.Value.IsMonitored && kv.Value is NicovideoUpstreamChannel &&
+                kv.Value.Status is "fallbackLocal" or "retryWaiting")
+            .Select(kv => kv.Value.RestartAsync()));
+
     public void StartMonitoring(string channel)
     {
         var canonical = ResolveChannel(channel);
@@ -431,6 +440,7 @@ public class ChannelManager
                     _loggerFactory.CreateLogger<NicovideoUpstreamChannel>(),
                     TimeSpan.FromMinutes(_config.GetValue<int>("CacheServer:NoStreamCheckIntervalMinutes", 30)),
                     _metrics,
+                    _sessionStore,
                     string.IsNullOrEmpty(lvId) ? _searchService : null);
             }
             else

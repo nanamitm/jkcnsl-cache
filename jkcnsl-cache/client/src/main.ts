@@ -756,6 +756,16 @@ function updateLoginUi() {
   updatePostArea()
 }
 
+async function syncNicovideoSession(cookie: string) {
+  try {
+    await fetch('/api/nicovideo/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ cookie: cookie || null }),
+    })
+  } catch { /* ignore */ }
+}
+
 function saveLoginEmail(email: string) {
   savedLoginEmail = email
   localStorage.setItem(LS_LOGIN_EMAIL, email)
@@ -775,6 +785,7 @@ function applySession(userSession: string, mfaTrustedDeviceToken?: string, email
   cookieStatus.textContent = '✓ ログイン成功'
   cookieStatus.className = 'cookie-ok'
   loginBtn.textContent = 'ログアウト'
+  void syncNicovideoSession(userCookie)
   updatePostArea()
   if (selectedChannel) connectWatchWs(selectedChannel)
 }
@@ -794,6 +805,7 @@ function doLogout() {
   cookieStatus.textContent = 'ログアウトしました'
   cookieStatus.className = 'cookie-none'
   loginBtn.textContent = 'ログイン'
+  void syncNicovideoSession(userCookie)
   updatePostArea()
 }
 
@@ -868,6 +880,7 @@ loginBtn.addEventListener('click', () => { if (userCookie) doLogout(); else doLo
 loginPassword.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin() })
 otpBtn.addEventListener('click', doMfa)
 otpInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') doMfa() })
+void syncNicovideoSession(userCookie)
 
 // ─── NG list
 function renderNgList() {

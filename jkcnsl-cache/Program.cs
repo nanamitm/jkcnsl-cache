@@ -16,6 +16,7 @@ builder.Logging.AddProvider(new LogBroadcastProvider(logBroadcaster));
 
 builder.Services.AddSingleton<NicovideoSearchService>();
 builder.Services.AddSingleton<ChannelCatalog>();
+builder.Services.AddSingleton<NicovideoSessionStore>();
 builder.Services.AddSingleton<ChannelManager>();
 builder.Services.AddSingleton<ChannelsStreamBroadcaster>();
 builder.Services.AddSingleton<LocalStreamConnectionLimiter>();
@@ -443,7 +444,7 @@ app.Lifetime.ApplicationStopping.Register(() =>
 
 
 // ニコニコログイン（メール+パスワード → user_session または 2FA トークンを返す）
-app.MapPost("/api/login", async (HttpContext ctx, ILogger<Program> logger) =>
+app.MapPost("/api/login", async (HttpContext ctx, ILogger<Program> logger, NicovideoSessionStore sessionStore, ChannelManager mgr) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<NicovideoLoginRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.Email) || string.IsNullOrWhiteSpace(body.Password))
@@ -454,11 +455,13 @@ app.MapPost("/api/login", async (HttpContext ctx, ILogger<Program> logger) =>
     if (r.Error != null) return Results.Json(new { error = r.Error });
     if (r.MfaRequired) { logger.LogInformation("2FA required: {Email}", body.Email); return Results.Json(new { mfaRequired = true, mfaToken = r.MfaToken }); }
     logger.LogInformation("ニコニコログイン成功: {Email}", body.Email);
+    sessionStore.SetUserSession(r.UserSession);
+    await mgr.RestartAuthenticatedNicovideoChannelsAsync();
     return Results.Json(new { userSession = r.UserSession, mfaTrustedDeviceToken = r.MfaTrustedDeviceToken });
 });
 
 // 2FA ワンタイムパスワード送信
-app.MapPost("/api/login/mfa", async (HttpContext ctx, ILogger<Program> logger) =>
+app.MapPost("/api/login/mfa", async (HttpContext ctx, ILogger<Program> logger, NicovideoSessionStore sessionStore, ChannelManager mgr) =>
 {
     var body = await ctx.Request.ReadFromJsonAsync<NicovideoMfaRequest>();
     if (body is null || string.IsNullOrWhiteSpace(body.MfaToken) || string.IsNullOrWhiteSpace(body.Otp))
@@ -467,7 +470,17 @@ app.MapPost("/api/login/mfa", async (HttpContext ctx, ILogger<Program> logger) =
     var r = await NicovideoAuth.SubmitMfaAsync(body.MfaToken, body.Otp, body.TrustDevice, ctx.RequestAborted);
     if (r.Error != null) return Results.Json(new { error = r.Error });
     logger.LogInformation("2FA 認証成功");
+    sessionStore.SetUserSession(r.UserSession);
+    await mgr.RestartAuthenticatedNicovideoChannelsAsync();
     return Results.Json(new { userSession = r.UserSession, mfaTrustedDeviceToken = r.MfaTrustedDeviceToken });
+});
+
+app.MapPost("/api/nicovideo/session", async (NicovideoSessionSyncRequest body, NicovideoSessionStore sessionStore, ChannelManager mgr) =>
+{
+    sessionStore.SetUserSession(body.Cookie ?? body.UserSession);
+    if (!string.IsNullOrEmpty(sessionStore.GetCookieHeader()))
+        await mgr.RestartAuthenticatedNicovideoChannelsAsync();
+    return Results.Json(new { ok = true, hasSession = !string.IsNullOrEmpty(sessionStore.GetCookieHeader()) });
 });
 
 app.Run();
@@ -700,6 +713,7 @@ record ChannelSourceStatus(
 
 record NicovideoLoginRequest(string Email, string Password, string? MfaTrustedDeviceToken = null);
 record NicovideoMfaRequest(string MfaToken, string Otp, bool TrustDevice = true);
+record NicovideoSessionSyncRequest(string? UserSession = null, string? Cookie = null);
 
 sealed record EpgImportRequest(
     string Channel,

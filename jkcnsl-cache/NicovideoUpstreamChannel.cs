@@ -15,6 +15,7 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
     private readonly TimeSpan _noStreamCheckInterval;
     private readonly int _fallbackMaxCommentLength;
     private readonly NicovideoSearchService? _searchService;
+    private readonly NicovideoSessionStore? _sessionStore;
     private volatile string? _currentLvId;
     private volatile string? _scheduledLvId;
     private volatile bool _isScheduled;
@@ -98,12 +99,13 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
     private const int MaxChunkSize = 1048576;
 
     public NicovideoUpstreamChannel(string channel, string lvId, IConfiguration config, ILogger logger, TimeSpan noStreamCheckInterval,
-        MetricsService metrics, NicovideoSearchService? searchService = null)
+        MetricsService metrics, NicovideoSessionStore? sessionStore = null, NicovideoSearchService? searchService = null)
         : base(channel, logger, metrics, config)
     {
         _lvId = lvId;
         _noStreamCheckInterval = noStreamCheckInterval;
         _searchService = searchService;
+        _sessionStore = sessionStore;
         _fallbackMaxCommentLength = Math.Max(1, config.GetValue<int>("CacheServer:LocalStream:MaxCommentLength", 75));
         _streamIdleTimeout = TimeSpan.FromSeconds(Math.Max(60,
             config.GetValue<int>("CacheServer:NicovideoStreamIdleTimeoutSeconds", 180)));
@@ -517,7 +519,12 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         try
         {
             var watchUrl = $"https://live.nicovideo.jp/watch/{lvId}";
-            using var response = await _pageClient.GetAsync(watchUrl, ct);
+            using var request = new HttpRequestMessage(HttpMethod.Get, watchUrl);
+            var sessionCookie = _sessionStore?.GetCookieHeader();
+            if (!string.IsNullOrEmpty(sessionCookie))
+                request.Headers.TryAddWithoutValidation("Cookie", sessionCookie);
+
+            using var response = await _pageClient.SendAsync(request, ct);
             var finalUrl = response.RequestMessage?.RequestUri?.ToString() ?? watchUrl;
             if (!response.IsSuccessStatusCode)
             {
