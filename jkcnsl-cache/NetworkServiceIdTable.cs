@@ -17,45 +17,48 @@ public static class NetworkServiceIdTable
     public static readonly IReadOnlyList<JkServiceMapEntry> All = new JkServiceMapEntry[]
     {
         // BS
-        BsPrimary(0x0004, 16625, 101, "jk101", "ＮＨＫ ＢＳ"),
-        Bs(0x0004, 16625, 102, "jk102", "ＮＨＫ ＢＳサブ", isPrimary: false),
-        BsPrimary(0x0004, 16592, 141, "jk141", "ＢＳ日テレ"),
-        Bs(0x0004, 16592, 142, "jk142", "ＢＳ日テレサブ", isPrimary: false),
-        Bs(0x0004, 16592, 143, "jk143", "ＢＳ日テレサブ", isPrimary: false),
-        BsPrimary(0x0004, 16400, 151, "jk151", "ＢＳ朝日"),
-        BsPrimary(0x0004, 16401, 161, "jk161", "ＢＳ－ＴＢＳ"),
-        Bs(0x0004, 16401, 162, "jk162", "ＢＳ－ＴＢＳサブ", isPrimary: false),
-        Bs(0x0004, 16401, 163, "jk163", "ＢＳ－ＴＢＳサブ", isPrimary: false),
-        BsPrimary(0x0004, 16402, 171, "jk171", "ＢＳテレ東"),
-        BsPrimary(0x0004, 16593, 181, "jk181", "ＢＳフジ"),
-        Bs(0x0004, 16593, 182, "jk182", "ＢＳフジサブ", isPrimary: false),
-        Bs(0x0004, 16593, 183, "jk183", "ＢＳフジサブ", isPrimary: false),
-        BsPrimary(0x0004, 16432, 191, "jk191", "ＷＯＷＯＷプライム"),
-        BsPrimary(0x0004, 17488, 192, "jk192", "ＷＯＷＯＷライブ"),
-        BsPrimary(0x0004, 17489, 193, "jk193", "ＷＯＷＯＷシネマ"),
-        BsPrimary(0x0004, 18675, 200, "jk200", "ＢＳ１０"),
-        BsPrimary(0x0004, 16626, 201, "jk201", "ＢＳ１０スターチャンネル"),
-        BsPrimary(0x0004, 16528, 211, "jk211", "ＢＳ１１"),
-        BsPrimary(0x0004, 16530, 222, "jk222", "ＢＳ１２"),
-        BsPrimary(0x0004, 18130, 231, "jk231", "放送大学テレビ"),
-        Bs(0x0004, 18130, 232, "jk232", "放送大学テレビサブ", isPrimary: false),
-        BsPrimary(0x0004, 18258, 234, "jk234", "グリーンチャンネル"),
-        BsPrimary(0x0004, 17969, 236, "jk236", "ＢＳアニマックス"),
-        BsPrimary(0x0004, 18225, 242, "jk242", "Ｊ　ＳＰＯＲＴＳ　１"),
-        BsPrimary(0x0004, 18226, 243, "jk243", "Ｊ　ＳＰＯＲＴＳ　２"),
-        BsPrimary(0x0004, 18227, 244, "jk244", "Ｊ　ＳＰＯＲＴＳ　３"),
-        BsPrimary(0x0004, 18224, 245, "jk245", "Ｊ　ＳＰＯＲＴＳ　４"),
-        BsPrimary(0x0004, 17970, 251, "jk251", "ＢＳ釣りビジョン"),
-        BsPrimary(0x0004, 18256, 252, "jk252", "ＷＯＷＯＷプラス"),
-        BsPrimary(0x0004, 18257, 255, "jk255", "日本映画専門ｃｈ"),
-        BsPrimary(0x0004, 18288, 256, "jk256", "ディズニーｃｈ"),
-        BsPrimary(0x0004, 18803, 260, "jk260", "Ｊ：ＣＯＭ　ＢＳ"),
-        BsPrimary(0x0004, 18801, 265, "jk265", "ＢＳよしもと"),
-        BsPrimary(0x0004, 18130, 531, "jk531", "放送大学ラジオ"),
+        SatellitePrimary(0x0004, 16625, 101, "jk101", "ＮＨＫ ＢＳ"),
+        Satellite(0x0004, 16625, 102, "jk102", "ＮＨＫ ＢＳサブ", isPrimary: false),
+        SatellitePrimary(0x0004, 16592, 141, "jk141", "ＢＳ日テレ"),
+        Satellite(0x0004, 16592, 142, "jk142", "ＢＳ日テレサブ", isPrimary: false),
+        Satellite(0x0004, 16592, 143, "jk143", "ＢＳ日テレサブ", isPrimary: false),
+        SatellitePrimary(0x0004, 16400, 151, "jk151", "ＢＳ朝日"),
+        SatellitePrimary(0x0004, 16401, 161, "jk161", "ＢＳ－ＴＢＳ"),
+        Satellite(0x0004, 16401, 162, "jk162", "ＢＳ－ＴＢＳサブ", isPrimary: false),
+        Satellite(0x0004, 16401, 163, "jk163", "ＢＳ－ＴＢＳサブ", isPrimary: false),
+        SatellitePrimary(0x0004, 16402, 171, "jk171", "ＢＳテレ東"),
+        SatellitePrimary(0x0004, 16593, 181, "jk181", "ＢＳフジ"),
+        Satellite(0x0004, 16593, 182, "jk182", "ＢＳフジサブ", isPrimary: false),
+        Satellite(0x0004, 16593, 183, "jk183", "ＢＳフジサブ", isPrimary: false),
+        SatellitePrimary(0x0004, 16432, 191, "jk191", "ＷＯＷＯＷプライム"),
+        SatellitePrimary(0x0004, 17488, 192, "jk192", "ＷＯＷＯＷライブ"),
+        SatellitePrimary(0x0004, 17489, 193, "jk193", "ＷＯＷＯＷシネマ"),
+        SatellitePrimary(0x0004, 18675, 200, "jk200", "ＢＳ１０"),
+        SatellitePrimary(0x0004, 16626, 201, "jk201", "ＢＳ１０スターチャンネル"),
+        SatellitePrimary(0x0004, 16528, 211, "jk211", "ＢＳ１１"),
+        SatellitePrimary(0x0004, 16530, 222, "jk222", "ＢＳ１２"),
+        SatellitePrimary(0x0004, 18130, 231, "jk231", "放送大学テレビ"),
+        Satellite(0x0004, 18130, 232, "jk232", "放送大学テレビサブ", isPrimary: false),
+        SatellitePrimary(0x0004, 18258, 234, "jk234", "グリーンチャンネル"),
+        SatellitePrimary(0x0004, 17969, 236, "jk236", "ＢＳアニマックス"),
+        SatellitePrimary(0x0004, 18225, 242, "jk242", "Ｊ　ＳＰＯＲＴＳ　１"),
+        SatellitePrimary(0x0004, 18226, 243, "jk243", "Ｊ　ＳＰＯＲＴＳ　２"),
+        SatellitePrimary(0x0004, 18227, 244, "jk244", "Ｊ　ＳＰＯＲＴＳ　３"),
+        SatellitePrimary(0x0004, 18224, 245, "jk245", "Ｊ　ＳＰＯＲＴＳ　４"),
+        SatellitePrimary(0x0004, 17970, 251, "jk251", "ＢＳ釣りビジョン"),
+        SatellitePrimary(0x0004, 18256, 252, "jk252", "ＷＯＷＯＷプラス"),
+        SatellitePrimary(0x0004, 18257, 255, "jk255", "日本映画専門ｃｈ"),
+        SatellitePrimary(0x0004, 18288, 256, "jk256", "ディズニーｃｈ"),
+        SatellitePrimary(0x0004, 18803, 260, "jk260", "Ｊ：ＣＯＭ　ＢＳ"),
+        SatellitePrimary(0x0004, 18801, 265, "jk265", "ＢＳよしもと"),
+        SatellitePrimary(0x0004, 18130, 531, "jk531", "放送大学ラジオ"),
 
         // 高度BS
-        BsPrimary(0x000B, 45328, 101, "jk103", "ＮＨＫ　ＢＳＰ４Ｋ"),
-        BsPrimary(0x000B, 45280, 102, "jk104", "ＮＨＫ　ＢＳ８Ｋ"),
+        SatellitePrimary(0x000B, 45328, 101, "jk103", "ＮＨＫ　ＢＳＰ４Ｋ"),
+        SatellitePrimary(0x000B, 45280, 102, "jk104", "ＮＨＫ　ＢＳ８Ｋ"),
+
+        // CS
+        SatellitePrimary(0x0007, 28928, 333, "jk333", "ＡＴ－Ｘ"),
 
         // 関東広域
         TerrestrialPrimary(0x7FE0, 0x0400, "jk1", "ＮＨＫ総合・東京"),
@@ -457,7 +460,7 @@ public static class NetworkServiceIdTable
     public static ServiceKey TerrestrialServiceKey(ushort transportStreamId, ushort serviceId)
         => new(transportStreamId, transportStreamId, serviceId);
 
-    public static ServiceKey BsServiceKey(ushort originalNetworkId, ushort transportStreamId, ushort serviceId)
+    public static ServiceKey SatelliteServiceKey(ushort originalNetworkId, ushort transportStreamId, ushort serviceId)
         => new(originalNetworkId, transportStreamId, serviceId);
 
     private static JkServiceMapEntry TerrestrialPrimary(ushort transportStreamId, ushort serviceId, string jkId, string? notes = null)
@@ -466,10 +469,10 @@ public static class NetworkServiceIdTable
     private static JkServiceMapEntry Terrestrial(ushort transportStreamId, ushort serviceId, string jkId, string? notes = null, bool isPrimary = true)
         => new(TerrestrialServiceKey(transportStreamId, serviceId), jkId, isPrimary, notes);
 
-    private static JkServiceMapEntry BsPrimary(ushort originalNetworkId, ushort transportStreamId, ushort serviceId, string jkId, string? notes = null)
-        => Bs(originalNetworkId, transportStreamId, serviceId, jkId, notes, isPrimary: true);
+    private static JkServiceMapEntry SatellitePrimary(ushort originalNetworkId, ushort transportStreamId, ushort serviceId, string jkId, string? notes = null)
+        => Satellite(originalNetworkId, transportStreamId, serviceId, jkId, notes, isPrimary: true);
 
-    private static JkServiceMapEntry Bs(ushort originalNetworkId, ushort transportStreamId, ushort serviceId, string jkId, string? notes = null, bool isPrimary = true)
-        => new(BsServiceKey(originalNetworkId, transportStreamId, serviceId), jkId, isPrimary, notes);
+    private static JkServiceMapEntry Satellite(ushort originalNetworkId, ushort transportStreamId, ushort serviceId, string jkId, string? notes = null, bool isPrimary = true)
+        => new(SatelliteServiceKey(originalNetworkId, transportStreamId, serviceId), jkId, isPrimary, notes);
 }
 
