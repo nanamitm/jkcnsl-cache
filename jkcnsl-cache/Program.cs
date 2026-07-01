@@ -305,6 +305,27 @@ app.MapPost("/api/admin/epg/import", async (
     IConfiguration config,
     ILogger<Program> logger) =>
 {
+    static ServiceKey TryCreateImportServiceKey(ushort? originalNetworkId, ushort? transportStreamId, ushort? serviceId, out string? error)
+    {
+        var specified = (originalNetworkId.HasValue ? 1 : 0) +
+            (transportStreamId.HasValue ? 1 : 0) +
+            (serviceId.HasValue ? 1 : 0);
+        if (specified == 0)
+        {
+            error = null;
+            return default;
+        }
+
+        if (specified != 3)
+        {
+            error = "originalNetworkId/transportStreamId/serviceId はすべて指定する必要があります";
+            return default;
+        }
+
+        error = null;
+        return new ServiceKey(originalNetworkId!.Value, transportStreamId!.Value, serviceId!.Value);
+    }
+
     if (mainPort != statusPort && ctx.Connection.LocalPort != mainPort)
         return Results.NotFound();
 
@@ -320,12 +341,20 @@ app.MapPost("/api/admin/epg/import", async (
         return Results.Unauthorized();
 
     var body = await ctx.Request.ReadFromJsonAsync<EpgImportRequest>(cancellationToken: ctx.RequestAborted);
-    if (body is null || string.IsNullOrWhiteSpace(body.Channel))
-        return Results.BadRequest(new { error = "channel は必須です" });
+    if (body is null)
+        return Results.BadRequest(new { error = "request body は必須です" });
     if (body.Programs is null || body.Programs.Count == 0)
         return Results.BadRequest(new { error = "programs は1件以上必要です" });
 
     var source = string.IsNullOrWhiteSpace(body.Source) ? "airwave" : body.Source.Trim();
+    var defaultServiceKey = TryCreateImportServiceKey(body.OriginalNetworkId, body.TransportStreamId, body.ServiceId, out var defaultServiceKeyError);
+    if (defaultServiceKeyError != null)
+        return Results.BadRequest(new { error = defaultServiceKeyError });
+
+    var requestChannel = body.Channel?.Trim() ?? "";
+    if (string.IsNullOrWhiteSpace(requestChannel) && defaultServiceKey.IsEmpty)
+        return Results.BadRequest(new { error = "channel または originalNetworkId/transportStreamId/serviceId のいずれかは必須です" });
+
     var programs = new List<EpgProgram>();
     var errors = new List<string>();
 
@@ -358,28 +387,43 @@ app.MapPost("/api/admin/epg/import", async (
             continue;
         }
 
+        var programServiceKey = TryCreateImportServiceKey(
+            program.OriginalNetworkId ?? body.OriginalNetworkId,
+            program.TransportStreamId ?? body.TransportStreamId,
+            program.ServiceId ?? body.ServiceId,
+            out var programServiceKeyError);
+        if (programServiceKeyError != null)
+        {
+            errors.Add($"programs[{i}] {programServiceKeyError}");
+            continue;
+        }
+
         programs.Add(new EpgProgram(
             program.Title.Trim(),
             startAt,
             endAt,
             source,
             string.IsNullOrWhiteSpace(program.GenreCode) ? null : program.GenreCode.Trim(),
-            string.IsNullOrWhiteSpace(program.GenreName) ? null : program.GenreName.Trim()));
+            string.IsNullOrWhiteSpace(program.GenreName) ? null : program.GenreName.Trim(),
+            programServiceKey.OriginalNetworkId,
+            programServiceKey.TransportStreamId,
+            programServiceKey.ServiceId));
     }
 
     if (errors.Count > 0)
         return Results.BadRequest(new { error = "入力に誤りがあります", details = errors });
 
-    var (importedCount, currentChanged) = await programInfoService.ImportProgramsAsync(
-        body.Channel.Trim(), programs, ctx.RequestAborted);
+    var (resolvedChannel, importedCount, currentChanged) = await programInfoService.ImportProgramsAsync(
+        requestChannel, programs, ctx.RequestAborted);
 
-    logger.LogInformation("外部EPG APIで取り込みました: channel={Channel} source={Source} count={Count}",
-        body.Channel.Trim(), source, importedCount);
+    logger.LogInformation("外部EPG APIで取り込みました: channel={Channel} resolvedChannel={ResolvedChannel} source={Source} count={Count}",
+        requestChannel, resolvedChannel, source, importedCount);
 
     return Results.Json(new
     {
         ok = true,
-        channel = body.Channel.Trim(),
+        channel = requestChannel,
+        resolvedChannel,
         source,
         importedCount,
         currentChanged
@@ -716,9 +760,12 @@ record NicovideoMfaRequest(string MfaToken, string Otp, bool TrustDevice = true)
 record NicovideoSessionSyncRequest(string? UserSession = null, string? Cookie = null);
 
 sealed record EpgImportRequest(
-    string Channel,
+    string? Channel,
     string? Source,
     string? CapturedAt,
+    ushort? OriginalNetworkId,
+    ushort? TransportStreamId,
+    ushort? ServiceId,
     List<EpgImportProgramRequest> Programs);
 
 sealed record EpgImportProgramRequest(
@@ -726,4 +773,7 @@ sealed record EpgImportProgramRequest(
     string StartAt,
     string EndAt,
     string? GenreCode,
-    string? GenreName);
+    string? GenreName,
+    ushort? OriginalNetworkId,
+    ushort? TransportStreamId,
+    ushort? ServiceId);

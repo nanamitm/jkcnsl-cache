@@ -492,7 +492,7 @@ public sealed class ProgramInfoService : BackgroundService
             broadcastDate, broadcastDate.AddDays(1), newEpgPrograms.Count);
     }
 
-    public async Task<(int ImportedCount, bool CurrentChanged)> ImportProgramsAsync(
+    public async Task<(string ResolvedChannel, int ImportedCount, bool CurrentChanged)> ImportProgramsAsync(
         string channel,
         IReadOnlyList<EpgProgram> programs,
         CancellationToken ct)
@@ -502,13 +502,16 @@ public sealed class ProgramInfoService : BackgroundService
             .OrderBy(program => program.StartAt)
             .ToList();
         if (normalized.Count == 0)
-            return (0, false);
+            return (channel, 0, false);
 
-        _epgStorage.ReplaceImportedPrograms(channel, normalized);
+        var resolvedChannel = ResolveImportChannel(channel, normalized);
+        var annotated = AnnotateProgramsWithResolvedServiceKey(resolvedChannel, normalized).ToList();
+
+        _epgStorage.ReplaceImportedPrograms(resolvedChannel, annotated);
 
         var imported = new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal)
         {
-            [channel] = AnnotateProgramsWithChannelServiceKey(channel, normalized).ToList()
+            [resolvedChannel] = annotated
         };
         var importedByService = IndexProgramsByService(imported);
         lock (_lock)
@@ -521,9 +524,9 @@ public sealed class ProgramInfoService : BackgroundService
         if (changed)
             await _broadcaster.BroadcastAsync(CreateProgramsPayload(), ct);
 
-        _logger.LogInformation("[ProgramInfo] 外部EPGを取り込みました: channel={Channel} count={Count} start={Start} end={End}",
-            channel, normalized.Count, normalized.First().StartAt, normalized.Last().EndAt);
-        return (normalized.Count, changed);
+        _logger.LogInformation("[ProgramInfo] 外部EPGを取り込みました: channel={Channel} resolvedChannel={ResolvedChannel} count={Count} start={Start} end={End}",
+            channel, resolvedChannel, annotated.Count, annotated.First().StartAt, annotated.Last().EndAt);
+        return (resolvedChannel, annotated.Count, changed);
     }
 
     private async Task<bool> DelayIfEpgUpdateAvoidWindowAsync(DateTimeOffset nowUtc, CancellationToken ct)
@@ -1959,6 +1962,41 @@ public sealed class ProgramInfoService : BackgroundService
                     ServiceId = channelInfo.ServiceId,
                     LegacyChannel = channel,
                 }).ToList();
+    }
+
+    private IReadOnlyList<EpgProgram> AnnotateProgramsWithResolvedServiceKey(string channel, IEnumerable<EpgProgram> programs)
+    {
+        var annotated = AnnotateProgramsWithChannelServiceKey(channel, programs);
+        return annotated.Select(program =>
+            string.IsNullOrWhiteSpace(program.LegacyChannel)
+                ? program with { LegacyChannel = channel }
+                : program).ToList();
+    }
+
+    private string ResolveImportChannel(string channel, IReadOnlyList<EpgProgram> programs)
+    {
+        if (!string.IsNullOrWhiteSpace(channel))
+        {
+            var direct = _channelCatalog.All.FirstOrDefault(info =>
+                string.Equals(info.Video, channel, StringComparison.Ordinal) ||
+                string.Equals(info.LegacyJkId, channel, StringComparison.Ordinal));
+            if (direct != null)
+                return direct.Video;
+        }
+
+        var serviceProgram = programs.FirstOrDefault(program => program.HasServiceKey);
+        if (serviceProgram?.HasServiceKey == true)
+        {
+            var serviceKey = serviceProgram.ServiceKey;
+            var mappedChannel = _channelCatalog.All.FirstOrDefault(info => info.HasServiceKey && info.ServiceKey == serviceKey);
+            if (mappedChannel != null)
+                return mappedChannel.Video;
+
+            if (NetworkServiceIdTable.ByServiceKey.TryGetValue(serviceKey, out var mapping))
+                return mapping.JkId;
+        }
+
+        return channel;
     }
 
     private static Dictionary<ServiceKey, List<EpgProgram>> IndexProgramsByService(
