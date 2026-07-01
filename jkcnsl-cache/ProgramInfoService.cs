@@ -96,6 +96,12 @@ public sealed class ProgramInfoService : BackgroundService
         ["jk104"] = "s6",
     };
 
+    private static readonly IReadOnlyDictionary<string, string> ProgramFallbackChannels = new Dictionary<string, string>
+    {
+        ["jk102"] = "jk101",
+        ["jk232"] = "jk231",
+    };
+
     public ProgramInfoService(IConfiguration config, ILogger<ProgramInfoService> logger,
         ChannelsStreamBroadcaster broadcaster, ChannelCatalog channelCatalog,
         EpgStorageService epgStorage)
@@ -1873,8 +1879,8 @@ public sealed class ProgramInfoService : BackgroundService
                 nextPrograms[info.Video] = next;
             }
 
-            ApplyCurrentProgramFallback(nextPrograms, "jk102", "jk101");
-            ApplyCurrentProgramFallback(nextPrograms, "jk232", "jk231");
+            foreach (var (targetVideo, fallbackVideo) in ProgramFallbackChannels)
+                ApplyCurrentProgramFallback(nextPrograms, targetVideo, fallbackVideo);
 
             foreach (var (video, next) in nextPrograms)
             {
@@ -1918,8 +1924,9 @@ public sealed class ProgramInfoService : BackgroundService
         if (epgPrograms.TryGetValue(info.Video, out var programs))
             return programs;
 
-        if (info.Video == "jk102" && epgPrograms.TryGetValue("jk101", out var nhkBsPrograms))
-            return nhkBsPrograms;
+        if (ProgramFallbackChannels.TryGetValue(info.Video, out var fallbackVideo) &&
+            epgPrograms.TryGetValue(fallbackVideo, out var fallbackPrograms))
+            return fallbackPrograms;
 
         return Array.Empty<EpgProgram>();
     }
