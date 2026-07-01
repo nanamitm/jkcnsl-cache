@@ -19,6 +19,7 @@ public sealed class ProgramInfoService : BackgroundService
     private readonly object _lock = new();
     private readonly Dictionary<string, ProgramInfo> _currentPrograms = new();
     private readonly Dictionary<string, List<EpgProgram>> _epgPrograms = new();
+    private readonly Dictionary<ServiceKey, List<EpgProgram>> _epgProgramsByService = new();
     private readonly HashSet<DateOnly> _loadedBroadcastDates = new();
     private DateOnly? _loadedNhkBroadcastDate;
     private DateOnly? _loadedAtxBroadcastDate;
@@ -146,6 +147,7 @@ public sealed class ProgramInfoService : BackgroundService
         var rangeEnd = CreateBroadcastBoundary(broadcastDate.AddDays(1));
 
         Dictionary<string, List<EpgProgram>> epgPrograms;
+        Dictionary<ServiceKey, List<EpgProgram>> epgProgramsByService;
         DateTimeOffset cacheUpdatedAt;
         bool loaded;
         lock (_lock)
@@ -161,6 +163,14 @@ public sealed class ProgramInfoService : BackgroundService
                         .ToList(),
                     StringComparer.Ordinal)
                 : new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal);
+            epgProgramsByService = loaded
+                ? _epgProgramsByService.ToDictionary(
+                    kv => kv.Key,
+                    kv => kv.Value
+                        .Where(program => program.EndAt > rangeStart && program.StartAt < rangeEnd)
+                        .OrderBy(program => program.StartAt)
+                        .ToList())
+                : new Dictionary<ServiceKey, List<EpgProgram>>();
         }
 
         if (!loaded)
@@ -169,12 +179,13 @@ public sealed class ProgramInfoService : BackgroundService
             if (stored.Count > 0)
             {
                 epgPrograms = stored;
+                epgProgramsByService = IndexProgramsByService(stored);
                 loaded = true;
                 cacheUpdatedAt = DateTimeOffset.MinValue;
             }
         }
 
-        if (OverlayImportedPrograms(epgPrograms, rangeStart, rangeEnd))
+        if (OverlayImportedPrograms(epgPrograms, epgProgramsByService, rangeStart, rangeEnd))
             loaded = true;
 
         return new
@@ -193,7 +204,7 @@ public sealed class ProgramInfoService : BackgroundService
                 video = info.Video,
                 name = info.Name,
                 bs = info.Bs,
-                programs = ResolveSchedulePrograms(epgPrograms, info.Video)
+                programs = ResolveSchedulePrograms(epgPrograms, epgProgramsByService, info)
                     .Select(ToApiEpgProgram).ToArray()
             }),
         };
@@ -439,15 +450,19 @@ public sealed class ProgramInfoService : BackgroundService
             CopyExistingBsFujiSubChannelPrograms(broadcastDate, newEpgPrograms);
         }
 
-        OverlayImportedPrograms(newEpgPrograms,
+        OverlayImportedPrograms(newEpgPrograms, IndexProgramsByService(newEpgPrograms),
             CreateBroadcastBoundary(broadcastDate),
             CreateBroadcastBoundary(broadcastDate.AddDays(2)));
 
         lock (_lock)
         {
             _epgPrograms.Clear();
+            _epgProgramsByService.Clear();
             foreach (var (jkId, programs) in newEpgPrograms)
-                _epgPrograms[jkId] = programs.OrderBy(program => program.StartAt).ToList();
+                _epgPrograms[jkId] = AnnotateProgramsWithChannelServiceKey(jkId, programs)
+                    .OrderBy(program => program.StartAt).ToList();
+            foreach (var (serviceKey, programs) in IndexProgramsByService(_epgPrograms))
+                _epgProgramsByService[serviceKey] = programs;
             _loadedBroadcastDates.Clear();
             _loadedBroadcastDates.Add(broadcastDate);
             _loadedBroadcastDates.Add(broadcastDate.AddDays(1));
@@ -477,11 +492,13 @@ public sealed class ProgramInfoService : BackgroundService
 
         var imported = new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal)
         {
-            [channel] = normalized
+            [channel] = AnnotateProgramsWithChannelServiceKey(channel, normalized).ToList()
         };
+        var importedByService = IndexProgramsByService(imported);
         lock (_lock)
         {
             OverlayProgramMap(_epgPrograms, imported);
+            OverlayProgramMap(_epgProgramsByService, importedByService);
         }
 
         var changed = EvaluateCurrentPrograms(DateTimeOffset.UtcNow);
@@ -589,6 +606,7 @@ public sealed class ProgramInfoService : BackgroundService
     }
 
     private bool OverlayImportedPrograms(Dictionary<string, List<EpgProgram>> epgPrograms,
+        Dictionary<ServiceKey, List<EpgProgram>> epgProgramsByService,
         DateTimeOffset from, DateTimeOffset to)
     {
         var importedPrograms = _epgStorage.QueryImportedPrograms(from, to);
@@ -596,6 +614,7 @@ public sealed class ProgramInfoService : BackgroundService
             return false;
 
         OverlayProgramMap(epgPrograms, importedPrograms);
+        OverlayProgramMap(epgProgramsByService, IndexProgramsByService(importedPrograms));
         return true;
     }
 
@@ -619,6 +638,32 @@ public sealed class ProgramInfoService : BackgroundService
 
             existingPrograms.AddRange(overlayPrograms);
             basePrograms[channel] = existingPrograms
+                .OrderBy(program => program.StartAt)
+                .ThenBy(program => program.EndAt)
+                .ToList();
+        }
+    }
+
+    private static void OverlayProgramMap(Dictionary<ServiceKey, List<EpgProgram>> basePrograms,
+        IReadOnlyDictionary<ServiceKey, List<EpgProgram>> importedPrograms)
+    {
+        foreach (var (serviceKey, overlayPrograms) in importedPrograms)
+        {
+            if (overlayPrograms.Count == 0)
+                continue;
+
+            var rangeStart = overlayPrograms.Min(program => program.StartAt);
+            var rangeEnd = overlayPrograms.Max(program => program.EndAt);
+
+            if (!basePrograms.TryGetValue(serviceKey, out var existingPrograms))
+                existingPrograms = new List<EpgProgram>();
+            else
+                existingPrograms = existingPrograms
+                    .Where(program => program.EndAt <= rangeStart || program.StartAt >= rangeEnd)
+                    .ToList();
+
+            existingPrograms.AddRange(overlayPrograms);
+            basePrograms[serviceKey] = existingPrograms
                 .OrderBy(program => program.StartAt)
                 .ThenBy(program => program.EndAt)
                 .ToList();
@@ -1767,7 +1812,8 @@ public sealed class ProgramInfoService : BackgroundService
 
             foreach (var info in _channelCatalog.All)
             {
-                if (!_epgPrograms.TryGetValue(info.Video, out var programs))
+                var programs = ResolveProgramsForChannel(info, _epgPrograms, _epgProgramsByService);
+                if (programs.Count == 0)
                     continue;
 
                 var current = programs.FirstOrDefault(program => program.StartAt <= now && now < program.EndAt);
@@ -1814,15 +1860,73 @@ public sealed class ProgramInfoService : BackgroundService
 
     private static IReadOnlyList<EpgProgram> ResolveSchedulePrograms(
         IReadOnlyDictionary<string, List<EpgProgram>> epgPrograms,
-        string video)
+        IReadOnlyDictionary<ServiceKey, List<EpgProgram>> epgProgramsByService,
+        ChannelInfo info)
     {
-        if (epgPrograms.TryGetValue(video, out var programs))
+        if (info.HasServiceKey && epgProgramsByService.TryGetValue(info.ServiceKey, out var servicePrograms))
+            return servicePrograms;
+
+        if (epgPrograms.TryGetValue(info.Video, out var programs))
             return programs;
 
-        if (video == "jk102" && epgPrograms.TryGetValue("jk101", out var nhkBsPrograms))
+        if (info.Video == "jk102" && epgPrograms.TryGetValue("jk101", out var nhkBsPrograms))
             return nhkBsPrograms;
 
         return Array.Empty<EpgProgram>();
+    }
+
+    private IReadOnlyList<EpgProgram> ResolveProgramsForChannel(
+        ChannelInfo info,
+        IReadOnlyDictionary<string, List<EpgProgram>> programsByChannel,
+        IReadOnlyDictionary<ServiceKey, List<EpgProgram>> programsByService)
+    {
+        if (info.HasServiceKey && programsByService.TryGetValue(info.ServiceKey, out var servicePrograms))
+            return servicePrograms;
+        return ResolveSchedulePrograms(programsByChannel, programsByService, info);
+    }
+
+    private IReadOnlyList<EpgProgram> AnnotateProgramsWithChannelServiceKey(string channel, IEnumerable<EpgProgram> programs)
+    {
+        var channelInfo = _channelCatalog.All.FirstOrDefault(info =>
+            string.Equals(info.Video, channel, StringComparison.Ordinal) ||
+            string.Equals(info.LegacyJkId, channel, StringComparison.Ordinal));
+        if (channelInfo is null || !channelInfo.HasServiceKey)
+            return programs.ToList();
+
+        return programs.Select(program =>
+            program.HasServiceKey
+                ? program
+                : program with
+                {
+                    OriginalNetworkId = channelInfo.OriginalNetworkId,
+                    TransportStreamId = channelInfo.TransportStreamId,
+                    ServiceId = channelInfo.ServiceId,
+                    LegacyChannel = channel,
+                }).ToList();
+    }
+
+    private static Dictionary<ServiceKey, List<EpgProgram>> IndexProgramsByService(
+        IReadOnlyDictionary<string, List<EpgProgram>> programsByChannel)
+    {
+        var result = new Dictionary<ServiceKey, List<EpgProgram>>();
+        foreach (var (_, programs) in programsByChannel)
+        {
+            foreach (var program in programs)
+            {
+                if (!program.HasServiceKey)
+                    continue;
+                if (!result.TryGetValue(program.ServiceKey, out var list))
+                    result[program.ServiceKey] = list = new List<EpgProgram>();
+                list.Add(program);
+            }
+        }
+
+        foreach (var (serviceKey, programs) in result.ToArray())
+            result[serviceKey] = programs
+                .OrderBy(program => program.StartAt)
+                .ThenBy(program => program.EndAt)
+                .ToList();
+        return result;
     }
 
     private void MarkCurrentProgramsStale()
