@@ -43,7 +43,7 @@ public sealed class ProgramInfoService : BackgroundService
     private DateTimeOffset _lastBsFujiSubChannelAttemptUtc = DateTimeOffset.MinValue;
     private bool _hasBroadcastSnapshot;
 
-    private static readonly IReadOnlyDictionary<string, TVerBroadcasterInfo> JikkyoToTVer = new Dictionary<string, TVerBroadcasterInfo>
+    private static readonly IReadOnlyDictionary<string, TVerBroadcasterInfo> LegacyJikkyoToTVer = new Dictionary<string, TVerBroadcasterInfo>
     {
         ["jk1"] = new("ota", 23, 120),
         ["jk2"] = new("ota", 23, 124),
@@ -87,7 +87,7 @@ public sealed class ProgramInfoService : BackgroundService
         ["jk265"] = new("bs", 23, 265),
     };
 
-    private static readonly IReadOnlyDictionary<string, string> JikkyoToNhkService = new Dictionary<string, string>
+    private static readonly IReadOnlyDictionary<string, string> LegacyJikkyoToNhkService = new Dictionary<string, string>
     {
         ["jk1"]   = "g1",
         ["jk2"]   = "e1",
@@ -672,7 +672,20 @@ public sealed class ProgramInfoService : BackgroundService
 
     private IReadOnlyDictionary<string, TVerBroadcasterInfo> CreateTVerProgramMap()
     {
-        var map = new Dictionary<string, TVerBroadcasterInfo>(JikkyoToTVer, StringComparer.Ordinal);
+        var map = new Dictionary<string, TVerBroadcasterInfo>(StringComparer.Ordinal);
+        foreach (var info in _channelCatalog.All)
+        {
+            var legacyJkId = GetLegacyJkId(info);
+            if (legacyJkId != null && LegacyJikkyoToTVer.TryGetValue(legacyJkId, out var broadcaster))
+                map[info.Video] = broadcaster;
+        }
+
+        foreach (var (legacyJkId, broadcaster) in LegacyJikkyoToTVer)
+        {
+            if (!map.ContainsKey(legacyJkId))
+                map[legacyJkId] = broadcaster;
+        }
+
         foreach (var section in _config.GetSection("CacheServer:TVerProgramMap").GetChildren())
         {
             var type = section.GetValue<string>("Type");
@@ -690,6 +703,32 @@ public sealed class ProgramInfoService : BackgroundService
         return map;
     }
 
+    private IReadOnlyDictionary<string, string> CreateNhkProgramMap()
+    {
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var info in _channelCatalog.All)
+        {
+            var legacyJkId = GetLegacyJkId(info);
+            if (legacyJkId != null && LegacyJikkyoToNhkService.TryGetValue(legacyJkId, out var service))
+                map[info.Video] = service;
+        }
+
+        foreach (var (legacyJkId, service) in LegacyJikkyoToNhkService)
+        {
+            if (!map.ContainsKey(legacyJkId))
+                map[legacyJkId] = service;
+        }
+
+        return map;
+    }
+
+    private static string? GetLegacyJkId(ChannelInfo info)
+    {
+        if (!string.IsNullOrWhiteSpace(info.LegacyJkId))
+            return info.LegacyJkId;
+        return info.Video.StartsWith("jk", StringComparison.Ordinal) ? info.Video : null;
+    }
+
     private void CopyExistingNhkPrograms(DateOnly broadcastDate, Dictionary<string, List<EpgProgram>> epgPrograms)
     {
         if (_loadedNhkBroadcastDate != broadcastDate)
@@ -697,10 +736,10 @@ public sealed class ProgramInfoService : BackgroundService
 
         lock (_lock)
         {
-            foreach (var jkId in JikkyoToNhkService.Keys)
+            foreach (var channelVideo in CreateNhkProgramMap().Keys)
             {
-                if (_epgPrograms.TryGetValue(jkId, out var programs))
-                    epgPrograms[jkId] = programs;
+                if (_epgPrograms.TryGetValue(channelVideo, out var programs))
+                    epgPrograms[channelVideo] = programs;
             }
         }
     }
@@ -712,10 +751,10 @@ public sealed class ProgramInfoService : BackgroundService
 
         lock (_lock)
         {
-            foreach (var jkId in JikkyoToNhkService.Keys)
+            foreach (var channelVideo in CreateNhkProgramMap().Keys)
             {
-                if (!epgPrograms.ContainsKey(jkId) && _epgPrograms.TryGetValue(jkId, out var programs))
-                    epgPrograms[jkId] = programs;
+                if (!epgPrograms.ContainsKey(channelVideo) && _epgPrograms.TryGetValue(channelVideo, out var programs))
+                    epgPrograms[channelVideo] = programs;
             }
         }
     }
@@ -1004,7 +1043,7 @@ public sealed class ProgramInfoService : BackgroundService
         }
 
         var successCount = 0;
-        foreach (var (jkId, service) in JikkyoToNhkService)
+        foreach (var (channelVideo, service) in CreateNhkProgramMap())
         {
             try
             {
@@ -1046,10 +1085,10 @@ public sealed class ProgramInfoService : BackgroundService
                     continue;
                 }
 
-                epgPrograms[jkId] = parsedPrograms;
+                epgPrograms[channelVideo] = parsedPrograms;
                 successCount++;
                 _logger.LogInformation("[ProgramInfo] NHK EPG を更新しました: date={Date} area={Area} service={Service} channel={Channel} count={Count} genres={GenreCount}",
-                    broadcastDate, _nhkArea, service, jkId, parsedPrograms.Count,
+                    broadcastDate, _nhkArea, service, channelVideo, parsedPrograms.Count,
                     parsedPrograms.Count(program => program.GenreCode != null));
             }
             catch (OperationCanceledException) { throw; }
@@ -2190,3 +2229,4 @@ public sealed record EpgProgram(
     public ServiceKey ServiceKey => new(OriginalNetworkId, TransportStreamId, ServiceId);
     public bool HasServiceKey => !ServiceKey.IsEmpty;
 }
+
