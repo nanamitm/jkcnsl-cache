@@ -292,10 +292,12 @@ public sealed class EpgStorageService : BackgroundService
             using var reader = cmd.ExecuteReader();
             while (reader.Read())
             {
-                var channel = reader.GetString(0);
+                var storedChannel = reader.GetString(0);
                 var originalNetworkId = reader.IsDBNull(1) ? (ushort)0 : checked((ushort)reader.GetInt32(1));
                 var transportStreamId = reader.IsDBNull(2) ? (ushort)0 : checked((ushort)reader.GetInt32(2));
                 var serviceId = reader.IsDBNull(3) ? (ushort)0 : checked((ushort)reader.GetInt32(3));
+                var serviceKey = new ServiceKey(originalNetworkId, transportStreamId, serviceId);
+                var channel = ResolveStoredChannel(storedChannel, serviceKey);
                 var title = reader.GetString(4);
                 var startAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(5));
                 var endAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(6));
@@ -306,7 +308,7 @@ public sealed class EpgStorageService : BackgroundService
                 if (!result.TryGetValue(channel, out var list))
                     result[channel] = list = new List<EpgProgram>();
                 list.Add(new EpgProgram(title, startAt, endAt, source, genreCode, genreName,
-                    originalNetworkId, transportStreamId, serviceId, channel));
+                    originalNetworkId, transportStreamId, serviceId, storedChannel));
             }
         }
         catch (Exception ex)
@@ -324,6 +326,21 @@ public sealed class EpgStorageService : BackgroundService
 
     private static ServiceKey ResolveServiceKey(EpgProgram program, ChannelInfo? channelInfo) =>
         program.HasServiceKey ? program.ServiceKey : channelInfo?.ServiceKey ?? default;
+
+    private string ResolveStoredChannel(string storedChannel, ServiceKey serviceKey)
+    {
+        if (!serviceKey.IsEmpty)
+        {
+            var mappedChannel = _channelCatalog.All.FirstOrDefault(info => info.HasServiceKey && info.ServiceKey == serviceKey);
+            if (mappedChannel != null)
+                return mappedChannel.Video;
+
+            if (NetworkServiceIdTable.ByServiceKey.TryGetValue(serviceKey, out var mapping))
+                return mapping.JkId;
+        }
+
+        return ResolveChannel(storedChannel)?.Video ?? storedChannel;
+    }
 
     private static void BindServiceKeyParameters(SqliteParameter onid, SqliteParameter tsid, SqliteParameter sid, ServiceKey serviceKey)
     {
