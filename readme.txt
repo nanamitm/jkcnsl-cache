@@ -256,6 +256,46 @@ TVerProgramMap: 番組タイトル取得で使う TVer EPG の対応表を追加
   BS釣りビジョン(jk251), 日本映画専門ch(jk255), ディズニーch(jk256)。
   放送大学ラジオ(jk531) は TVer ではなく OujProgram で取得します。
 
+外部EPG取り込み API:
+  POST /api/admin/epg/import は従来どおり channel 指定で使えますが、
+  originalNetworkId / transportStreamId / serviceId を一緒に渡すと ServiceKey ベースで
+  正規化して保存できます。channel を省略し、ServiceKey だけで送ることもできます。
+
+  例: BS11 (ONID=4, TSID=16528, SID=211) を ServiceKey 付きで送る
+
+  {
+    "channel": "jk211",
+    "source": "airwave",
+    "originalNetworkId": 4,
+    "transportStreamId": 16528,
+    "serviceId": 211,
+    "programs": [
+      {
+        "title": "番組名",
+        "startAt": "2026-07-01T20:00:00+09:00",
+        "endAt": "2026-07-01T20:54:00+09:00",
+        "genreCode": "0x5",
+        "genreName": "バラエティ"
+      }
+    ]
+  }
+
+  例: channel を省略して ServiceKey だけで送る
+
+  {
+    "source": "airwave",
+    "originalNetworkId": 7,
+    "transportStreamId": 28928,
+    "serviceId": 333,
+    "programs": [
+      {
+        "title": "AT-X の番組名",
+        "startAt": "2026-07-01T22:00:00+09:00",
+        "endAt": "2026-07-01T22:30:00+09:00"
+      }
+    ]
+  }
+
 co{id} チャンネル: 起動時から定期的にニコニコ生放送を検索し、チャンネル名（"BS日テレ" 等）
   に一致する非公式配信を自動検出します。対応 ID は ChannelList.cs を参照。
   スクレイピングに失敗した lv は次の検索バッチまで待機し、連続リトライを防止します。

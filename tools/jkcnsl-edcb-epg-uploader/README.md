@@ -31,6 +31,7 @@ EDCB の番組表を読み取り、`jkcnsl-cache` の `POST /api/admin/epg/impor
 - `ServiceMappings`
 
 `送信チャンネル設定` では、`追加` から EDCB のサービス一覧を開いて対象チャンネルを選べます。`ONID / TSID / SID` は EDCB の識別子なので読み取り専用です。
+この識別子は送信時にも `jkcnsl-cache` へそのまま渡されるため、サーバー側では `video` 名だけでなく実 `ONID / TSID / SID` ベースでもチャンネルを正規化できます。
 
 ## よく使うコマンド
 

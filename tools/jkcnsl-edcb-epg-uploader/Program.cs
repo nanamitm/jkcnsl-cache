@@ -1188,7 +1188,7 @@ internal sealed class UploadWorker
 
                 if (!dryRun)
                 {
-                    await UploadProgramsAsync(httpClient, config, mapping.Video, programs, cancellationToken);
+                    await UploadProgramsAsync(httpClient, config, mapping, programs, cancellationToken);
                 }
             }
             catch (OperationCanceledException)
@@ -1214,14 +1214,17 @@ internal sealed class UploadWorker
     private async Task UploadProgramsAsync(
         HttpClient httpClient,
         AppConfig config,
-        string channel,
+        ServiceMapping mapping,
         IReadOnlyList<ImportProgram> programs,
         CancellationToken cancellationToken)
     {
         var payload = new EpgImportRequest(
-            channel,
+            mapping.Video,
             config.ImportApi.Source,
             DateTimeOffset.Now.ToString("O"),
+            mapping.Onid,
+            mapping.Tsid,
+            mapping.Sid,
             programs.Select(x => new EpgImportProgramRequest(
                 x.Title,
                 x.StartAt.ToString("O"),
@@ -1237,7 +1240,7 @@ internal sealed class UploadWorker
         if (!response.IsSuccessStatusCode)
         {
             var body = await response.Content.ReadAsStringAsync(cancellationToken);
-            throw new InvalidOperationException($"API送信失敗 channel={channel} status={(int)response.StatusCode} body={body}");
+            throw new InvalidOperationException($"API送信失敗 channel={mapping.Video} status={(int)response.StatusCode} body={body}");
         }
     }
 
@@ -1737,6 +1740,9 @@ internal sealed record EpgImportRequest(
     string Channel,
     string? Source,
     string? CapturedAt,
+    ushort? OriginalNetworkId,
+    ushort? TransportStreamId,
+    ushort? ServiceId,
     List<EpgImportProgramRequest> Programs);
 
 internal sealed record EpgImportProgramRequest(
