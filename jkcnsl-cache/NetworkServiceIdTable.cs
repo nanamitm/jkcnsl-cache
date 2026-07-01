@@ -12,7 +12,7 @@ public static class NetworkServiceIdTable
     // 実 ONID/TSID/SID ベースの ServiceKey を正規化した対応表として持つ。
     // 地上波は現時点の調査範囲では ONID == TSID で扱えるため、
     // エントリ定義ではその前提をヘルパーに閉じ込めて記述する。
-    // 群馬テレビ・とちぎテレビ・ぎふチャン等の独立局は、現状 ChannelList 未対応のため保留。
+    // 放送大学の地上波放送は終了済みのため対象外。
     public static readonly IReadOnlyList<JkServiceMapEntry> All = new JkServiceMapEntry[]
     {
         // 関東広域
@@ -174,6 +174,7 @@ public static class NetworkServiceIdTable
 
         // 群馬
         TerrestrialPrimary(0x7E60, 0x6400, "jk1", "ＮＨＫ総合・前橋"),
+        TerrestrialPrimary(0x7E67, 0x6438, "jk15", "群馬テレビ"),
 
         // 茨城
         TerrestrialPrimary(0x7E50, 0x6800, "jk1", "ＮＨＫ総合・水戸"),
@@ -183,6 +184,7 @@ public static class NetworkServiceIdTable
 
         // 栃木
         TerrestrialPrimary(0x7E30, 0x7000, "jk1", "ＮＨＫ総合・宇都宮"),
+        TerrestrialPrimary(0x7E37, 0x7038, "jk16", "とちぎテレビ"),
 
         // 埼玉
         TerrestrialPrimary(0x7E27, 0x7438, "jk10", "テレ玉"),
@@ -248,6 +250,7 @@ public static class NetworkServiceIdTable
 
         // 岐阜
         TerrestrialPrimary(0x7D80, 0x9C00, "jk1", "ＮＨＫ総合・岐阜"),
+        TerrestrialPrimary(0x7D86, 0x9C30, "jk17", "ぎふチャン"),
 
         // 大阪
         TerrestrialPrimary(0x7D70, 0xA000, "jk1", "ＮＨＫ総合・大阪"),
@@ -263,12 +266,15 @@ public static class NetworkServiceIdTable
 
         // 和歌山
         TerrestrialPrimary(0x7D40, 0xAC00, "jk1", "ＮＨＫ総合・和歌山"),
+        TerrestrialPrimary(0x7D46, 0xAC30, "jk18", "テレビ和歌山"),
 
         // 奈良
         TerrestrialPrimary(0x7D30, 0xB000, "jk1", "ＮＨＫ総合・奈良"),
+        TerrestrialPrimary(0x7D36, 0xB030, "jk19", "奈良テレビ"),
 
         // 滋賀
         TerrestrialPrimary(0x7D20, 0xB400, "jk1", "ＮＨＫ総合・大津"),
+        TerrestrialPrimary(0x7D26, 0xB430, "jk20", "ＢＢＣびわ湖放送"),
 
         // 広島
         TerrestrialPrimary(0x7D10, 0xB800, "jk1", "ＮＨＫ総合・広島"),
@@ -415,3 +421,4 @@ public static class NetworkServiceIdTable
     private static JkServiceMapEntry Terrestrial(ushort transportStreamId, ushort serviceId, string jkId, string? notes = null, bool isPrimary = true)
         => new(TerrestrialServiceKey(transportStreamId, serviceId), jkId, isPrimary, notes);
 }
+
