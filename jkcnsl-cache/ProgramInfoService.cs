@@ -2077,4 +2077,12 @@ public sealed record EpgProgram(
     DateTimeOffset EndAt,
     string Source,
     string? GenreCode,
-    string? GenreName);
+    string? GenreName,
+    ushort OriginalNetworkId = 0,
+    ushort TransportStreamId = 0,
+    ushort ServiceId = 0,
+    string? LegacyChannel = null)
+{
+    public ServiceKey ServiceKey => new(OriginalNetworkId, TransportStreamId, ServiceId);
+    public bool HasServiceKey => !ServiceKey.IsEmpty;
+}

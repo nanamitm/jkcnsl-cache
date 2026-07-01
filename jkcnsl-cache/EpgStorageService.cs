@@ -7,12 +7,14 @@ public sealed class EpgStorageService : BackgroundService
     private readonly ILogger<EpgStorageService> _logger;
     private readonly string _dbPath;
     private readonly int _retentionDays;
+    private readonly ChannelCatalog _channelCatalog;
 
-    public EpgStorageService(IConfiguration config, ILogger<EpgStorageService> logger)
+    public EpgStorageService(IConfiguration config, ILogger<EpgStorageService> logger, ChannelCatalog channelCatalog)
     {
         _logger = logger;
         _dbPath = config["EpgStorage:DbPath"] ?? "local/epg.db";
         _retentionDays = Math.Max(1, config.GetValue("EpgStorage:RetentionDays", 60));
+        _channelCatalog = channelCatalog;
     }
 
     public void SavePrograms(string channel, IReadOnlyList<EpgProgram> programs)
@@ -24,23 +26,28 @@ public sealed class EpgStorageService : BackgroundService
             using var tx = conn.BeginTransaction();
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
-                "INSERT OR REPLACE INTO epg_programs (channel, title, start_at, end_at, source, genre_code, genre_name) " +
-                "VALUES ($ch, $title, $start, $end, $source, $genre_code, $genre_name)";
-            var pCh        = cmd.Parameters.Add("$ch",         SqliteType.Text);
-            var pTitle     = cmd.Parameters.Add("$title",      SqliteType.Text);
-            var pStart     = cmd.Parameters.Add("$start",      SqliteType.Integer);
-            var pEnd       = cmd.Parameters.Add("$end",        SqliteType.Integer);
-            var pSource    = cmd.Parameters.Add("$source",     SqliteType.Text);
+                "INSERT OR REPLACE INTO epg_programs (channel, original_network_id, transport_stream_id, service_id, title, start_at, end_at, source, genre_code, genre_name) " +
+                "VALUES ($ch, $onid, $tsid, $sid, $title, $start, $end, $source, $genre_code, $genre_name)";
+            var pCh = cmd.Parameters.Add("$ch", SqliteType.Text);
+            var pOnid = cmd.Parameters.Add("$onid", SqliteType.Integer);
+            var pTsid = cmd.Parameters.Add("$tsid", SqliteType.Integer);
+            var pSid = cmd.Parameters.Add("$sid", SqliteType.Integer);
+            var pTitle = cmd.Parameters.Add("$title", SqliteType.Text);
+            var pStart = cmd.Parameters.Add("$start", SqliteType.Integer);
+            var pEnd = cmd.Parameters.Add("$end", SqliteType.Integer);
+            var pSource = cmd.Parameters.Add("$source", SqliteType.Text);
             var pGenreCode = cmd.Parameters.Add("$genre_code", SqliteType.Text);
             var pGenreName = cmd.Parameters.Add("$genre_name", SqliteType.Text);
 
             pCh.Value = channel;
+            var channelInfo = ResolveChannel(channel);
             foreach (var p in programs)
             {
-                pTitle.Value     = p.Title;
-                pStart.Value     = p.StartAt.ToUnixTimeSeconds();
-                pEnd.Value       = p.EndAt.ToUnixTimeSeconds();
-                pSource.Value    = p.Source;
+                BindServiceKeyParameters(pOnid, pTsid, pSid, ResolveServiceKey(p, channelInfo));
+                pTitle.Value = p.Title;
+                pStart.Value = p.StartAt.ToUnixTimeSeconds();
+                pEnd.Value = p.EndAt.ToUnixTimeSeconds();
+                pSource.Value = p.Source;
                 pGenreCode.Value = (object?)p.GenreCode ?? DBNull.Value;
                 pGenreName.Value = (object?)p.GenreName ?? DBNull.Value;
                 cmd.ExecuteNonQuery();
@@ -78,9 +85,12 @@ public sealed class EpgStorageService : BackgroundService
 
             using var insert = conn.CreateCommand();
             insert.CommandText =
-                "INSERT OR REPLACE INTO epg_import_programs (channel, title, start_at, end_at, source, genre_code, genre_name) " +
-                "VALUES ($ch, $title, $start, $end, $source, $genre_code, $genre_name)";
+                "INSERT OR REPLACE INTO epg_import_programs (channel, original_network_id, transport_stream_id, service_id, title, start_at, end_at, source, genre_code, genre_name) " +
+                "VALUES ($ch, $onid, $tsid, $sid, $title, $start, $end, $source, $genre_code, $genre_name)";
             var pCh = insert.Parameters.Add("$ch", SqliteType.Text);
+            var pOnid = insert.Parameters.Add("$onid", SqliteType.Integer);
+            var pTsid = insert.Parameters.Add("$tsid", SqliteType.Integer);
+            var pSid = insert.Parameters.Add("$sid", SqliteType.Integer);
             var pTitle = insert.Parameters.Add("$title", SqliteType.Text);
             var pStart = insert.Parameters.Add("$start", SqliteType.Integer);
             var pEnd = insert.Parameters.Add("$end", SqliteType.Integer);
@@ -89,8 +99,10 @@ public sealed class EpgStorageService : BackgroundService
             var pGenreName = insert.Parameters.Add("$genre_name", SqliteType.Text);
 
             pCh.Value = channel;
+            var channelInfo = ResolveChannel(channel);
             foreach (var p in programs)
             {
+                BindServiceKeyParameters(pOnid, pTsid, pSid, ResolveServiceKey(p, channelInfo));
                 pTitle.Value = p.Title;
                 pStart.Value = p.StartAt.ToUnixTimeSeconds();
                 pEnd.Value = p.EndAt.ToUnixTimeSeconds();
@@ -128,42 +140,7 @@ public sealed class EpgStorageService : BackgroundService
 
     public Dictionary<string, List<EpgProgram>> QueryPrograms(DateTimeOffset from, DateTimeOffset to)
     {
-        var result = new Dictionary<string, List<EpgProgram>>(StringComparer.Ordinal);
-        if (!File.Exists(_dbPath)) return result;
-
-        try
-        {
-            using var conn = OpenConnection(readOnly: true);
-            using var cmd = conn.CreateCommand();
-            cmd.CommandText =
-                "SELECT channel, title, start_at, end_at, source, genre_code, genre_name " +
-                "FROM epg_programs WHERE end_at > $from AND start_at < $to " +
-                "ORDER BY channel, start_at";
-            cmd.Parameters.AddWithValue("$from", from.ToUnixTimeSeconds());
-            cmd.Parameters.AddWithValue("$to",   to.ToUnixTimeSeconds());
-
-            using var reader = cmd.ExecuteReader();
-            while (reader.Read())
-            {
-                var channel   = reader.GetString(0);
-                var title     = reader.GetString(1);
-                var startAt   = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2));
-                var endAt     = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(3));
-                var source    = reader.GetString(4);
-                var genreCode = reader.IsDBNull(5) ? null : reader.GetString(5);
-                var genreName = reader.IsDBNull(6) ? null : reader.GetString(6);
-
-                if (!result.TryGetValue(channel, out var list))
-                    result[channel] = list = new List<EpgProgram>();
-                list.Add(new EpgProgram(title, startAt, endAt, source, genreCode, genreName));
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "[EpgStorage] EPGデータの取得に失敗しました");
-        }
-
-        return result;
+        return QueryProgramsCore("epg_programs", from, to);
     }
 
     public Dictionary<string, List<EpgProgram>> QueryImportedPrograms(DateTimeOffset from, DateTimeOffset to)
@@ -235,32 +212,65 @@ public sealed class EpgStorageService : BackgroundService
         using var cmd = conn.CreateCommand();
         cmd.CommandText = """
             CREATE TABLE IF NOT EXISTS epg_programs (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel    TEXT    NOT NULL,
-                title      TEXT    NOT NULL,
-                start_at   INTEGER NOT NULL,
-                end_at     INTEGER NOT NULL,
-                source     TEXT    NOT NULL,
-                genre_code TEXT,
-                genre_name TEXT
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel              TEXT    NOT NULL,
+                original_network_id  INTEGER,
+                transport_stream_id  INTEGER,
+                service_id           INTEGER,
+                title                TEXT    NOT NULL,
+                start_at             INTEGER NOT NULL,
+                end_at               INTEGER NOT NULL,
+                source               TEXT    NOT NULL,
+                genre_code           TEXT,
+                genre_name           TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_channel_start ON epg_programs(channel, start_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_service_start ON epg_programs(original_network_id, transport_stream_id, service_id, start_at)
+                WHERE original_network_id IS NOT NULL AND transport_stream_id IS NOT NULL AND service_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_epg_end ON epg_programs(end_at);
 
             CREATE TABLE IF NOT EXISTS epg_import_programs (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                channel    TEXT    NOT NULL,
-                title      TEXT    NOT NULL,
-                start_at   INTEGER NOT NULL,
-                end_at     INTEGER NOT NULL,
-                source     TEXT    NOT NULL,
-                genre_code TEXT,
-                genre_name TEXT
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                channel              TEXT    NOT NULL,
+                original_network_id  INTEGER,
+                transport_stream_id  INTEGER,
+                service_id           INTEGER,
+                title                TEXT    NOT NULL,
+                start_at             INTEGER NOT NULL,
+                end_at               INTEGER NOT NULL,
+                source               TEXT    NOT NULL,
+                genre_code           TEXT,
+                genre_name           TEXT
             );
             CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_import_channel_start ON epg_import_programs(channel, start_at);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_epg_import_service_start ON epg_import_programs(original_network_id, transport_stream_id, service_id, start_at)
+                WHERE original_network_id IS NOT NULL AND transport_stream_id IS NOT NULL AND service_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_epg_import_end ON epg_import_programs(end_at);
             """;
         cmd.ExecuteNonQuery();
+
+        EnsureColumn(conn, "epg_programs", "original_network_id", "INTEGER");
+        EnsureColumn(conn, "epg_programs", "transport_stream_id", "INTEGER");
+        EnsureColumn(conn, "epg_programs", "service_id", "INTEGER");
+        EnsureColumn(conn, "epg_import_programs", "original_network_id", "INTEGER");
+        EnsureColumn(conn, "epg_import_programs", "transport_stream_id", "INTEGER");
+        EnsureColumn(conn, "epg_import_programs", "service_id", "INTEGER");
+    }
+
+    private static void EnsureColumn(SqliteConnection conn, string tableName, string columnName, string typeName)
+    {
+        using var pragma = conn.CreateCommand();
+        pragma.CommandText = $"PRAGMA table_info({tableName})";
+        using var reader = pragma.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), columnName, StringComparison.OrdinalIgnoreCase))
+                return;
+        }
+
+        using var alter = conn.CreateCommand();
+        alter.CommandText = $"ALTER TABLE {tableName} ADD COLUMN {columnName} {typeName}";
+        alter.ExecuteNonQuery();
     }
 
     private Dictionary<string, List<EpgProgram>> QueryProgramsCore(string tableName, DateTimeOffset from, DateTimeOffset to)
@@ -273,7 +283,7 @@ public sealed class EpgStorageService : BackgroundService
             using var conn = OpenConnection(readOnly: true);
             using var cmd = conn.CreateCommand();
             cmd.CommandText =
-                $"SELECT channel, title, start_at, end_at, source, genre_code, genre_name " +
+                $"SELECT channel, original_network_id, transport_stream_id, service_id, title, start_at, end_at, source, genre_code, genre_name " +
                 $"FROM {tableName} WHERE end_at > $from AND start_at < $to " +
                 $"ORDER BY channel, start_at";
             cmd.Parameters.AddWithValue("$from", from.ToUnixTimeSeconds());
@@ -283,16 +293,20 @@ public sealed class EpgStorageService : BackgroundService
             while (reader.Read())
             {
                 var channel = reader.GetString(0);
-                var title = reader.GetString(1);
-                var startAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(2));
-                var endAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(3));
-                var source = reader.GetString(4);
-                var genreCode = reader.IsDBNull(5) ? null : reader.GetString(5);
-                var genreName = reader.IsDBNull(6) ? null : reader.GetString(6);
+                var originalNetworkId = reader.IsDBNull(1) ? (ushort)0 : checked((ushort)reader.GetInt32(1));
+                var transportStreamId = reader.IsDBNull(2) ? (ushort)0 : checked((ushort)reader.GetInt32(2));
+                var serviceId = reader.IsDBNull(3) ? (ushort)0 : checked((ushort)reader.GetInt32(3));
+                var title = reader.GetString(4);
+                var startAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(5));
+                var endAt = DateTimeOffset.FromUnixTimeSeconds(reader.GetInt64(6));
+                var source = reader.GetString(7);
+                var genreCode = reader.IsDBNull(8) ? null : reader.GetString(8);
+                var genreName = reader.IsDBNull(9) ? null : reader.GetString(9);
 
                 if (!result.TryGetValue(channel, out var list))
                     result[channel] = list = new List<EpgProgram>();
-                list.Add(new EpgProgram(title, startAt, endAt, source, genreCode, genreName));
+                list.Add(new EpgProgram(title, startAt, endAt, source, genreCode, genreName,
+                    originalNetworkId, transportStreamId, serviceId, channel));
             }
         }
         catch (Exception ex)
@@ -301,5 +315,20 @@ public sealed class EpgStorageService : BackgroundService
         }
 
         return result;
+    }
+
+    private ChannelInfo? ResolveChannel(string channel) =>
+        _channelCatalog.All.FirstOrDefault(info =>
+            string.Equals(info.Video, channel, StringComparison.Ordinal) ||
+            string.Equals(info.LegacyJkId, channel, StringComparison.Ordinal));
+
+    private static ServiceKey ResolveServiceKey(EpgProgram program, ChannelInfo? channelInfo) =>
+        program.HasServiceKey ? program.ServiceKey : channelInfo?.ServiceKey ?? default;
+
+    private static void BindServiceKeyParameters(SqliteParameter onid, SqliteParameter tsid, SqliteParameter sid, ServiceKey serviceKey)
+    {
+        onid.Value = serviceKey.OriginalNetworkId == 0 ? DBNull.Value : serviceKey.OriginalNetworkId;
+        tsid.Value = serviceKey.TransportStreamId == 0 ? DBNull.Value : serviceKey.TransportStreamId;
+        sid.Value = serviceKey.ServiceId == 0 ? DBNull.Value : serviceKey.ServiceId;
     }
 }
