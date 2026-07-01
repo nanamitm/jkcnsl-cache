@@ -13,13 +13,15 @@ public sealed class ChannelCatalog
     {
         get
         {
-            var channels = ChannelList.All.ToDictionary(channel => channel.Video, StringComparer.Ordinal);
+            var channels = ChannelList.All
+                .Select(ApplyDefaultMapping)
+                .ToDictionary(channel => channel.Video, StringComparer.Ordinal);
 
             foreach (var extra in _config.GetSection("CacheServer:ExtraChannels").GetChildren())
             {
                 var channel = ReadChannelInfo(extra);
                 if (channel != null)
-                    channels[channel.Video] = channel;
+                    channels[channel.Video] = ApplyDefaultMapping(channel);
             }
 
             foreach (var overrideSection in _config.GetSection("CacheServer:ChannelOverrides").GetChildren())
@@ -27,7 +29,7 @@ public sealed class ChannelCatalog
                 if (!channels.TryGetValue(overrideSection.Key, out var current))
                     continue;
 
-                channels[overrideSection.Key] = current with
+                channels[overrideSection.Key] = ApplyDefaultMapping(current with
                 {
                     Id = overrideSection.GetValue<int?>("Id") ?? current.Id,
                     Name = overrideSection.GetValue<string>("Name") ?? current.Name,
@@ -37,7 +39,7 @@ public sealed class ChannelCatalog
                     TransportStreamId = ReadUShort(overrideSection, "TransportStreamId") ?? current.TransportStreamId,
                     ServiceId = ReadUShort(overrideSection, "ServiceId") ?? current.ServiceId,
                     LegacyJkId = overrideSection.GetValue<string>("LegacyJkId") ?? current.LegacyJkId,
-                };
+                });
             }
 
             return channels.Values
@@ -63,6 +65,28 @@ public sealed class ChannelCatalog
 
         return new ChannelInfo(id.Value, name, video, bs.Value,
             originalNetworkId, transportStreamId, serviceId, legacyJkId);
+    }
+
+    private static ChannelInfo ApplyDefaultMapping(ChannelInfo channel)
+    {
+        var legacyJkId = string.IsNullOrWhiteSpace(channel.LegacyJkId) && channel.Video.StartsWith("jk", StringComparison.Ordinal)
+            ? channel.Video
+            : channel.LegacyJkId;
+
+        if (channel.HasServiceKey || string.IsNullOrWhiteSpace(legacyJkId))
+            return channel with { LegacyJkId = legacyJkId };
+
+        if (!NetworkServiceIdTable.ByJkId.TryGetValue(legacyJkId, out var mappings) || mappings.Count == 0)
+            return channel with { LegacyJkId = legacyJkId };
+
+        var preferred = mappings.FirstOrDefault(entry => entry.IsPrimary) ?? mappings[0];
+        return channel with
+        {
+            OriginalNetworkId = preferred.ServiceKey.OriginalNetworkId,
+            TransportStreamId = preferred.ServiceKey.TransportStreamId,
+            ServiceId = preferred.ServiceKey.ServiceId,
+            LegacyJkId = legacyJkId,
+        };
     }
 
     private static ushort? ReadUShort(IConfiguration section, string key)
