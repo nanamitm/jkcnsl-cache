@@ -136,6 +136,11 @@ public sealed class ProgramInfoService : BackgroundService
         {
             id = info.Id,
             video = info.Video,
+            legacyJkId = GetLegacyJkId(info),
+            serviceKey = ToApiServiceKey(info.ServiceKey),
+            originalNetworkId = info.HasServiceKey ? (ushort?)info.OriginalNetworkId : null,
+            transportStreamId = info.HasServiceKey ? (ushort?)info.TransportStreamId : null,
+            serviceId = info.HasServiceKey ? (ushort?)info.ServiceId : null,
             program = ToApiProgram(GetProgram(info.Video)),
         }),
     };
@@ -202,8 +207,13 @@ public sealed class ProgramInfoService : BackgroundService
             {
                 id = info.Id,
                 video = info.Video,
+                legacyJkId = GetLegacyJkId(info),
                 name = info.Name,
                 bs = info.Bs,
+                serviceKey = ToApiServiceKey(info.ServiceKey),
+                originalNetworkId = info.HasServiceKey ? (ushort?)info.OriginalNetworkId : null,
+                transportStreamId = info.HasServiceKey ? (ushort?)info.TransportStreamId : null,
+                serviceId = info.HasServiceKey ? (ushort?)info.ServiceId : null,
                 programs = ResolveSchedulePrograms(epgPrograms, epgProgramsByService, info)
                     .Select(ToApiEpgProgram).ToArray()
             }),
@@ -2192,7 +2202,21 @@ public sealed class ProgramInfoService : BackgroundService
         source = program.Source,
         genreCode = program.GenreCode,
         genreName = program.GenreName,
+        legacyChannel = program.LegacyChannel,
+        serviceKey = ToApiServiceKey(program.ServiceKey),
+        originalNetworkId = program.HasServiceKey ? (ushort?)program.OriginalNetworkId : null,
+        transportStreamId = program.HasServiceKey ? (ushort?)program.TransportStreamId : null,
+        serviceId = program.HasServiceKey ? (ushort?)program.ServiceId : null,
     };
+
+    private static object? ToApiServiceKey(ServiceKey serviceKey) => serviceKey.IsEmpty
+        ? null
+        : new
+        {
+            originalNetworkId = serviceKey.OriginalNetworkId,
+            transportStreamId = serviceKey.TransportStreamId,
+            serviceId = serviceKey.ServiceId,
+        };
 
     private static TimeZoneInfo ResolveTimeZone(string timeZoneId)
     {
