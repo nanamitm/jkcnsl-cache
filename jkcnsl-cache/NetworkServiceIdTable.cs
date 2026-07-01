@@ -35,6 +35,7 @@ public static class NetworkServiceIdTable
         SatellitePrimary(0x0004, 17489, 193, "jk193", "ＷＯＷＯＷシネマ"),
         SatellitePrimary(0x0004, 18675, 200, "jk200", "ＢＳ１０"),
         SatellitePrimary(0x0004, 16626, 201, "jk201", "ＢＳ１０スターチャンネル"),
+        Satellite(0x0004, 16626, 202, "jk202", "スターチャンネル３ (旧BS配置)", isPrimary: false),
         SatellitePrimary(0x0004, 16528, 211, "jk211", "ＢＳ１１"),
         SatellitePrimary(0x0004, 16530, 222, "jk222", "ＢＳ１２"),
         SatellitePrimary(0x0004, 18130, 231, "jk231", "放送大学テレビ"),
@@ -50,6 +51,7 @@ public static class NetworkServiceIdTable
         SatellitePrimary(0x0004, 18257, 255, "jk255", "日本映画専門ｃｈ"),
         SatellitePrimary(0x0004, 18288, 256, "jk256", "ディズニーｃｈ"),
         SatellitePrimary(0x0004, 18803, 260, "jk260", "Ｊ：ＣＯＭ　ＢＳ"),
+        Satellite(0x0004, 18802, 263, "jk263", "ＢＳＪａｐａｎｅｘｔ (旧BS配置)", isPrimary: false),
         SatellitePrimary(0x0004, 18801, 265, "jk265", "ＢＳよしもと"),
         SatellitePrimary(0x0004, 18130, 531, "jk531", "放送大学ラジオ"),
 
