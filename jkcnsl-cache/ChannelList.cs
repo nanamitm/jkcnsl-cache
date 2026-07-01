@@ -1,6 +1,24 @@
 namespace jkcnsl_cache;
 
-public record ChannelInfo(int Id, string Name, string Video, bool Bs);
+public readonly record struct ServiceKey(ushort OriginalNetworkId, ushort TransportStreamId, ushort ServiceId)
+{
+    public override string ToString() => $"{OriginalNetworkId}:{TransportStreamId}:{ServiceId}";
+    public bool IsEmpty => OriginalNetworkId == 0 && TransportStreamId == 0 && ServiceId == 0;
+}
+
+public record ChannelInfo(
+    int Id,
+    string Name,
+    string Video,
+    bool Bs,
+    ushort OriginalNetworkId = 0,
+    ushort TransportStreamId = 0,
+    ushort ServiceId = 0,
+    string? LegacyJkId = null)
+{
+    public ServiceKey ServiceKey => new(OriginalNetworkId, TransportStreamId, ServiceId);
+    public bool HasServiceKey => !ServiceKey.IsEmpty;
+}
 
 public static class ChannelList
 {

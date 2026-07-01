@@ -33,6 +33,10 @@ public sealed class ChannelCatalog
                     Name = overrideSection.GetValue<string>("Name") ?? current.Name,
                     Video = overrideSection.GetValue<string>("Video") ?? current.Video,
                     Bs = overrideSection.GetValue<bool?>("Bs") ?? current.Bs,
+                    OriginalNetworkId = ReadUShort(overrideSection, "OriginalNetworkId") ?? current.OriginalNetworkId,
+                    TransportStreamId = ReadUShort(overrideSection, "TransportStreamId") ?? current.TransportStreamId,
+                    ServiceId = ReadUShort(overrideSection, "ServiceId") ?? current.ServiceId,
+                    LegacyJkId = overrideSection.GetValue<string>("LegacyJkId") ?? current.LegacyJkId,
                 };
             }
 
@@ -49,10 +53,31 @@ public sealed class ChannelCatalog
         var name = section.GetValue<string>("Name");
         var video = section.GetValue<string>("Video");
         var bs = section.GetValue<bool?>("Bs");
+        var originalNetworkId = ReadUShort(section, "OriginalNetworkId") ?? 0;
+        var transportStreamId = ReadUShort(section, "TransportStreamId") ?? 0;
+        var serviceId = ReadUShort(section, "ServiceId") ?? 0;
+        var legacyJkId = section.GetValue<string>("LegacyJkId");
 
         if (id == null || string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(video) || bs == null)
             return null;
 
-        return new ChannelInfo(id.Value, name, video, bs.Value);
+        return new ChannelInfo(id.Value, name, video, bs.Value,
+            originalNetworkId, transportStreamId, serviceId, legacyJkId);
+    }
+
+    private static ushort? ReadUShort(IConfiguration section, string key)
+    {
+        var value = section[key];
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        value = value.Trim();
+        if (value.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+            return ushort.TryParse(value[2..], System.Globalization.NumberStyles.HexNumber,
+                System.Globalization.CultureInfo.InvariantCulture, out var hexValue)
+                ? hexValue
+                : null;
+
+        return ushort.TryParse(value, out var decimalValue) ? decimalValue : null;
     }
 }
