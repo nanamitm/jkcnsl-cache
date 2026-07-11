@@ -78,6 +78,7 @@ jobs:
         with:
           name: windows-x64-release
           path: ${{ env.WINDOWS_PACKAGE }}
+          retention-days: 7
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -170,6 +171,7 @@ jobs:
         with:
           name: linux-x86_64-appimage
           path: ${{ env.APPIMAGE_NAME }}
+          retention-days: 7
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
@@ -306,6 +308,7 @@ jobs:
         with:
           name: android-arm64-release
           path: ${{ env.APK_NAME }}
+          retention-days: 7
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')

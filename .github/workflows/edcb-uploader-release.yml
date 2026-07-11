@@ -65,6 +65,7 @@ jobs:
         with:
           name: edcb-uploader-windows-x64
           path: ${{ env.UPLOADER_PACKAGE }}
+          retention-days: 7
 
       - name: Upload to GitHub Release
         if: startsWith(github.ref, 'refs/tags/')
