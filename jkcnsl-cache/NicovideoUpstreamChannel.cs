@@ -140,6 +140,10 @@ public sealed class NicovideoUpstreamChannel : UpstreamChannelBase
         // 2. 非公式チャンネル: 検索サービスから次のバッチ結果を受け取る
         if (webSocketUrl == null && _searchService != null)
         {
+            // 非公式検索バッチ待ちは意図的な待機（次の検索サイクルまでブロックする）。
+            // _isRetryWaiting を立てておかないと、ウォッチドッグが fallbackLocal を
+            // スタックと誤認して 10 分ごとに再起動し続けてしまう。
+            _isRetryWaiting = true;
             SetFallbackState(true, "waiting_non_official_search_result");
             var result = await _searchService.WaitForNextResultAsync(_channel, _failedNonOfficialLvId, ct);
             if (result == null)
