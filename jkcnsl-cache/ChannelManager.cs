@@ -19,6 +19,10 @@ public class ChannelManager
     private readonly MetricsService _metrics;
     private readonly CommentStorageService _commentStorage;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
+    // upstreamValue -> それを共有するチャンネルキー群（エイリアス集計用）。
+    // GetViewerCount 呼び出しのたびに _channels 全体を線形スキャンするのを避けるため、
+    // チャンネル作成時（GetOrCreateChannel）にのみ登録し、参照はここから行う。
+    private readonly ConcurrentDictionary<string, ConcurrentDictionary<string, byte>> _channelsByUpstreamValue = new(StringComparer.Ordinal);
 
     private static readonly HttpClient _watchScrapeClient = CreateWatchScrapeClient();
     private static HttpClient CreateWatchScrapeClient()
@@ -355,10 +359,20 @@ public class ChannelManager
         if (IsLocalStreamValue(upstreamValue))
             return channel.ClientCount;
 
-        // 同じ上流を持つエイリアスチャンネル（ch2646436 等）のクライアントも合算する
-        return _channels
-            .Where(kv => _config[$"CacheServer:Channels:{kv.Key}"] == upstreamValue)
-            .Sum(kv => kv.Value.ClientCount);
+        // 同じ上流を持つエイリアスチャンネル（ch2646436 等）のクライアントも合算する。
+        // _channelsByUpstreamValue はチャンネル作成時に登録済みのため、_channels 全体を
+        // 毎回スキャンせず、同一上流のチャンネルキーだけを参照する。
+        if (string.IsNullOrEmpty(upstreamValue) ||
+            !_channelsByUpstreamValue.TryGetValue(upstreamValue, out var aliasKeys))
+            return channel.ClientCount;
+
+        var total = 0;
+        foreach (var key in aliasKeys.Keys)
+        {
+            if (_channels.TryGetValue(key, out var ch))
+                total += ch.ClientCount;
+        }
+        return total;
     }
 
     public (int Force, int Viewers, long TotalComments, long LastResNo) GetAggregatedStats(IEnumerable<string> channels)
@@ -416,6 +430,10 @@ public class ChannelManager
     private UpstreamChannelBase GetOrCreateChannel(string channel, string upstreamValue) =>
         _channels.GetOrAdd(channel, _ =>
         {
+            _channelsByUpstreamValue
+                .GetOrAdd(upstreamValue, _ => new ConcurrentDictionary<string, byte>(StringComparer.Ordinal))
+                [channel] = 0;
+
             UpstreamChannelBase ch;
             if (IsLocalStreamValue(upstreamValue))
             {
