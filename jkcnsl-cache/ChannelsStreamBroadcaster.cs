@@ -31,23 +31,34 @@ public sealed class ChannelsStreamBroadcaster
 
     public void Remove(Guid id) => _clients.TryRemove(id, out _);
 
-    public Task SendAsync(Guid id, object payload, CancellationToken ct) =>
-        _clients.TryGetValue(id, out var client)
-            ? SendToClientAsync(id, client, payload, ct)
-            : Task.CompletedTask;
+    public Task SendAsync(Guid id, object payload, CancellationToken ct)
+    {
+        if (!_clients.TryGetValue(id, out var client))
+            return Task.CompletedTask;
+        var bytes = Serialize(payload);
+        return SendToClientAsync(id, client, bytes, ct);
+    }
 
     // 全クライアントへ並列送信する。応答が無いクライアントが1件でもいると
     // 逐次送信では他クライアントへの配信やこのメソッドの呼び出し元（ProgramInfoService の
     // 定期ループ）まで無期限に止まってしまうため、クライアントごとにタイムアウトを掛けて
-    // 詰まった接続だけを切断する。
+    // 詰まった接続だけを切断する。JSONシリアライズは全クライアント共通なので1回だけ行い、
+    // 得られたバイト列をそのまま使い回す（クライアントごとに再シリアライズしない）。
     public Task BroadcastAsync(object payload, CancellationToken ct)
     {
+        var bytes = Serialize(payload);
         var tasks = _clients.ToArray()
-            .Select(kv => SendToClientAsync(kv.Key, kv.Value, payload, ct));
+            .Select(kv => SendToClientAsync(kv.Key, kv.Value, bytes, ct));
         return Task.WhenAll(tasks);
     }
 
-    private async Task SendToClientAsync(Guid id, StreamClient client, object payload, CancellationToken ct)
+    private static ReadOnlyMemory<byte> Serialize(object payload)
+    {
+        var json = JsonSerializer.Serialize(payload, JsonOptions);
+        return Encoding.UTF8.GetBytes(json);
+    }
+
+    private async Task SendToClientAsync(Guid id, StreamClient client, ReadOnlyMemory<byte> bytes, CancellationToken ct)
     {
         if (client.WebSocket.State != WebSocketState.Open)
         {
@@ -59,7 +70,7 @@ public sealed class ChannelsStreamBroadcaster
         timeoutCts.CancelAfter(_sendTimeout);
         try
         {
-            await client.SendAsync(payload, timeoutCts.Token);
+            await client.SendAsync(bytes, timeoutCts.Token);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -102,12 +113,10 @@ public sealed class ChannelsStreamBroadcaster
 
         public WebSocket WebSocket { get; } = webSocket;
 
-        public async Task SendAsync(object payload, CancellationToken ct)
+        public async Task SendAsync(ReadOnlyMemory<byte> bytes, CancellationToken ct)
         {
             if (WebSocket.State != WebSocketState.Open) return;
 
-            var json = JsonSerializer.Serialize(payload, JsonOptions);
-            var bytes = Encoding.UTF8.GetBytes(json);
             await _sendLock.WaitAsync(ct);
             try
             {
