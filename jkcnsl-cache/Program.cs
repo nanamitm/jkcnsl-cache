@@ -25,6 +25,7 @@ builder.Services.AddSingleton<ProgramInfoService>();
 builder.Services.AddSingleton<CommentStorageService>();
 builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
 builder.Services.AddHostedService<ChannelMonitorService>();
+builder.Services.AddHostedService<ChannelsStatsBroadcastService>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<MetricsService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<EpgStorageService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProgramInfoService>());
@@ -235,9 +236,9 @@ app.MapGet("/api/status", (ChannelManager mgr, ChannelCatalog channelCatalog) =>
         var coChannel = "co" + info.Id;
         var sources = new[]
         {
-            CreateSourceStatus(mgr, info.Video, "official"),
-            CreateSourceStatus(mgr, coChannel, "unofficial"),
-            CreateSourceStatus(mgr, info.Video + "r", "refuge"),
+            ChannelsStreamPayloads.CreateSourceStatus(mgr, info.Video, "official"),
+            ChannelsStreamPayloads.CreateSourceStatus(mgr, coChannel, "unofficial"),
+            ChannelsStreamPayloads.CreateSourceStatus(mgr, info.Video + "r", "refuge"),
         };
 
         return new
@@ -393,7 +394,7 @@ app.MapGet("/api/channels", (ChannelManager mgr, ChannelCatalog channelCatalog) 
     int threadId = 0;
     foreach (var info in channelCatalog.All)
     {
-        var (force, viewers, totalComments, lastResNo) = mgr.GetAggregatedStats(GetSourceKeys(info));
+        var (force, viewers, totalComments, lastResNo) = mgr.GetAggregatedStats(ChannelsStreamPayloads.GetSourceKeys(info));
         var tag = info.Bs ? "bs_channel" : "channel";
         sb.Append($"<{tag}>");
         sb.Append($"<id>{info.Id}</id>");
@@ -487,69 +488,8 @@ static DateOnly ToBroadcastDate(DateTimeOffset utc, TimeZoneInfo timeZone)
     return local.Hour < 5 ? date.AddDays(-1) : date;
 }
 
-static ChannelSourceStatus CreateSourceStatus(ChannelManager mgr, string key, string defaultSourceType)
-{
-    var sourceType = defaultSourceType;
-    if (!mgr.IsConfiguredChannel(key))
-        return new ChannelSourceStatus(key, sourceType, SourceLabel(sourceType), false, false, null,
-            0, 0, 0, 0, false, null, "notConfigured", null, false, RequiresAuth(sourceType),
-            $"/watch/{key}", $"/comment/{key}");
-
-    var (running, type, currentTarget, force, viewers, totalComments, lastResNo) = mgr.GetChannelFullStats(key);
-    var scheduledStartUtc = mgr.GetChannelScheduled(key);
-    var isReserved = mgr.IsChannelScheduled(key);
-    var (status, statusText) = mgr.GetChannelStatus(key);
-    sourceType = SourceTypeFromDisplayType(type, defaultSourceType);
-    var isLocalFallback = status == "fallbackLocal";
-    return new ChannelSourceStatus(
-        key,
-        sourceType,
-        SourceLabel(sourceType),
-        true,
-        running,
-        currentTarget,
-        force,
-        viewers,
-        totalComments,
-        lastResNo,
-        isReserved,
-        scheduledStartUtc,
-        status,
-        statusText,
-        Commentable(sourceType),
-        !isLocalFallback && RequiresAuth(sourceType),
-        $"/watch/{key}",
-        $"/comment/{key}");
-}
-
-static string SourceTypeFromDisplayType(string type, string defaultSourceType) => type switch
-{
-    "公式" => "official",
-    "非公式" => "unofficial",
-    "避難所" => "refuge",
-    "ローカル" => "local",
-    "-" => defaultSourceType,
-    _ => "unknown",
-};
-
-static string SourceLabel(string sourceType) => sourceType switch
-{
-    "official" => "公式",
-    "unofficial" => "非公式",
-    "refuge" => "避難所",
-    "local" => "ローカル",
-    _ => "-",
-};
-
-static bool RequiresAuth(string sourceType) => sourceType is "official" or "unofficial";
-static bool Commentable(string sourceType) => sourceType is "local" or "refuge" or "official" or "unofficial";
-
-static IEnumerable<string> GetSourceKeys(ChannelInfo info)
-{
-    yield return info.Video;
-    yield return "co" + info.Id;
-    yield return info.Video + "r";
-}
+// CreateSourceStatus / GetSourceKeys / snapshot・stats ペイロード生成は
+// ChannelsStreamPayloads に集約（複数クライアントで使い回すため）。
 
 static async Task HandleChannelsStreamAsync(
     WebSocket ws,
@@ -563,21 +503,16 @@ static async Task HandleChannelsStreamAsync(
 {
     using var receiveCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
     var receiveTask = DrainWebSocketAsync(ws, receiveCts.Token);
-    var statsInterval = TimeSpan.FromSeconds(intervalSec);
     var clientId = streamBroadcaster.Add(ws);
 
     try
     {
         await streamBroadcaster.SendAsync(clientId,
-            CreateChannelsSnapshot(mgr, config, programInfoService, channelCatalog, intervalSec), ct);
+            ChannelsStreamPayloads.CreateChannelsSnapshot(mgr, config, programInfoService, channelCatalog, intervalSec), ct);
 
-        while (!ct.IsCancellationRequested && ws.State == WebSocketState.Open && !receiveTask.IsCompleted)
-        {
-            await Task.Delay(statsInterval, ct);
-            if (ws.State != WebSocketState.Open || receiveTask.IsCompleted) break;
-
-            await streamBroadcaster.SendAsync(clientId, CreateChannelsStats(mgr, config, channelCatalog, intervalSec), ct);
-        }
+        // 以後の stats 配信は ChannelsStatsBroadcastService が全クライアントへ一括配信するため、
+        // ここでは接続維持（受信ドレイン）と切断検知だけを行う。
+        await receiveTask;
     }
     catch (OperationCanceledException) { }
     catch (WebSocketException) { }
@@ -595,64 +530,6 @@ static async Task HandleChannelsStreamAsync(
     }
 }
 
-static object CreateChannelsSnapshot(ChannelManager mgr, IConfiguration config,
-    ProgramInfoService programInfoService, ChannelCatalog channelCatalog, int intervalSec) => new
-{
-    type = "snapshot",
-    updatedAt = FormatServerTime(config),
-    statsIntervalSec = intervalSec,
-    channels = channelCatalog.All.Select(info =>
-    {
-        var (force, viewers, totalComments, lastResNo) = mgr.GetAggregatedStats(GetSourceKeys(info));
-        var coChannel = "co" + info.Id;
-        return new
-        {
-            id = info.Id,
-            name = info.Name,
-            video = info.Video,
-            bs = info.Bs,
-            force,
-            viewers,
-            comments = totalComments,
-            lastResNo,
-            program = ProgramInfoService.ToApiProgram(programInfoService.GetProgram(info.Video)),
-            sources = new[]
-            {
-                CreateSourceStatus(mgr, info.Video, "official"),
-                CreateSourceStatus(mgr, coChannel, "unofficial"),
-                CreateSourceStatus(mgr, info.Video + "r", "refuge"),
-            },
-        };
-    }),
-};
-
-static object CreateChannelsStats(ChannelManager mgr, IConfiguration config, ChannelCatalog channelCatalog, int intervalSec) => new
-{
-    type = "stats",
-    updatedAt = FormatServerTime(config),
-    intervalSec,
-    channels = channelCatalog.All.Select(info =>
-    {
-        var (force, viewers, totalComments, lastResNo) = mgr.GetAggregatedStats(GetSourceKeys(info));
-        var coChannel = "co" + info.Id;
-        return new
-        {
-            id = info.Id,
-            video = info.Video,
-            force,
-            viewers,
-            comments = totalComments,
-            lastResNo,
-            sources = new[]
-            {
-                CreateSourceStatus(mgr, info.Video, "official"),
-                CreateSourceStatus(mgr, coChannel, "unofficial"),
-                CreateSourceStatus(mgr, info.Video + "r", "refuge"),
-            },
-        };
-    }),
-};
-
 static async Task DrainWebSocketAsync(WebSocket ws, CancellationToken ct)
 {
     var buffer = new byte[256];
@@ -668,35 +545,6 @@ static async Task DrainWebSocketAsync(WebSocket ws, CancellationToken ct)
     catch (WebSocketException) { }
     catch (InvalidOperationException) { }
 }
-
-static string FormatServerTime(IConfiguration config)
-{
-    var timeZoneId = config["CacheServer:BroadcastTimeZone"] ?? "Asia/Tokyo";
-    TimeZoneInfo timeZone;
-    try { timeZone = TimeZoneInfo.FindSystemTimeZoneById(timeZoneId); }
-    catch { timeZone = TimeZoneInfo.Local; }
-    return TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, timeZone).ToString("yyyy-MM-ddTHH:mm:ss.fffzzz");
-}
-
-record ChannelSourceStatus(
-    string Key,
-    string SourceType,
-    string Label,
-    bool Configured,
-    bool Running,
-    string? CurrentTarget,
-    int Force,
-    int Viewers,
-    long TotalComments,
-    long LastResNo,
-    bool IsReserved,
-    DateTimeOffset? ScheduledStartUtc,
-    string Status,
-    string? StatusText,
-    bool Commentable,
-    bool RequiresAuth,
-    string WatchUrl,
-    string CommentUrl);
 
 record NicovideoLoginRequest(string Email, string Password, string? MfaTrustedDeviceToken = null);
 record NicovideoMfaRequest(string MfaToken, string Otp, bool TrustDevice = true);
