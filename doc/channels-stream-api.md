@@ -110,6 +110,8 @@ WebSocket接続が受理された直後に1回送信されます。
 
 `CacheServer:ChannelsStreamIntervalSeconds` は `stats` のプッシュ間隔です。既定値は `2` で、既存の勢いリストAPIのキャッシュ間隔に合わせています。
 
+`CacheServer:BroadcastSendTimeoutSeconds` は `snapshot`/`programs` を各クライアントへ送信する際のタイムアウトです。既定値は `5` 秒で、コメント配信（`UpstreamChannelBase`）と共通の設定を使います。応答のないクライアントが1件でもいると、この値を超えて送信が詰まり続けることはなく、そのクライアントだけを切断して他クライアントへの配信を継続します。
+
 `CacheServer:ProgramInfoUpdateIntervalSeconds` は、TVer EPGキャッシュを更新する間隔です。既定値は `1200` 秒です。開発用設定では短い間隔に上書きできます。
 
 `CacheServer:ProgramInfoEvaluationIntervalSeconds` は、キャッシュ済みEPGを現在時刻と照合して現在番組を評価する間隔です。既定値は `60` 秒です。

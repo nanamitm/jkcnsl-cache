@@ -9,11 +9,18 @@ namespace jkcnsl_cache;
 public sealed class ChannelsStreamBroadcaster
 {
     private readonly ConcurrentDictionary<Guid, StreamClient> _clients = new();
+    private readonly TimeSpan _sendTimeout;
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
     };
+
+    public ChannelsStreamBroadcaster(IConfiguration config)
+    {
+        _sendTimeout = TimeSpan.FromSeconds(Math.Max(1,
+            config.GetValue<int>("CacheServer:BroadcastSendTimeoutSeconds", 5)));
+    }
 
     public Guid Add(WebSocket ws)
     {
@@ -30,24 +37,44 @@ public sealed class ChannelsStreamBroadcaster
 
     public Task SendAsync(Guid id, object payload, CancellationToken ct) =>
         _clients.TryGetValue(id, out var client)
-            ? client.SendAsync(payload, ct)
+            ? SendToClientAsync(id, client, payload, ct)
             : Task.CompletedTask;
 
-    public async Task BroadcastAsync(object payload, CancellationToken ct)
+    // 全クライアントへ並列送信する。応答が無いクライアントが1件でもいると
+    // 逐次送信では他クライアントへの配信やこのメソッドの呼び出し元（ProgramInfoService の
+    // 定期ループ）まで無期限に止まってしまうため、クライアントごとにタイムアウトを掛けて
+    // 詰まった接続だけを切断する。
+    public Task BroadcastAsync(object payload, CancellationToken ct)
     {
-        foreach (var (id, client) in _clients.ToArray())
-        {
-            if (client.WebSocket.State != WebSocketState.Open)
-            {
-                Remove(id);
-                continue;
-            }
+        var tasks = _clients.ToArray()
+            .Select(kv => SendToClientAsync(kv.Key, kv.Value, payload, ct));
+        return Task.WhenAll(tasks);
+    }
 
-            try { await client.SendAsync(payload, ct); }
-            catch
+    private async Task SendToClientAsync(Guid id, StreamClient client, object payload, CancellationToken ct)
+    {
+        if (client.WebSocket.State != WebSocketState.Open)
+        {
+            Remove(id);
+            return;
+        }
+
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(_sendTimeout);
+            await client.SendAsync(payload, timeoutCts.Token);
+        }
+        catch
+        {
+            Remove(id);
+            try
             {
-                Remove(id);
+                if (client.WebSocket.State is WebSocketState.Open or WebSocketState.CloseReceived)
+                    await client.WebSocket.CloseAsync(WebSocketCloseStatus.PolicyViolation,
+                        "broadcast send timeout", CancellationToken.None);
             }
+            catch { }
         }
     }
 
