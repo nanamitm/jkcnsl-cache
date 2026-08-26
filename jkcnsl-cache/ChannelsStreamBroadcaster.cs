@@ -29,11 +29,7 @@ public sealed class ChannelsStreamBroadcaster
         return id;
     }
 
-    public void Remove(Guid id)
-    {
-        if (_clients.TryRemove(id, out var client))
-            client.Dispose();
-    }
+    public void Remove(Guid id) => _clients.TryRemove(id, out _);
 
     public Task SendAsync(Guid id, object payload, CancellationToken ct) =>
         _clients.TryGetValue(id, out var client)
@@ -59,11 +55,16 @@ public sealed class ChannelsStreamBroadcaster
             return;
         }
 
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(_sendTimeout);
         try
         {
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(_sendTimeout);
             await client.SendAsync(payload, timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            // 呼び出し元のキャンセル（切断・アプリ終了）。タイムアウト扱いにせず、
+            // 通常のクローズ処理（CloseAllAsync や接続ハンドラの finally）に任せる。
         }
         catch
         {
@@ -95,7 +96,7 @@ public sealed class ChannelsStreamBroadcaster
         }
     }
 
-    private sealed class StreamClient(WebSocket webSocket) : IDisposable
+    private sealed class StreamClient(WebSocket webSocket)
     {
         private readonly SemaphoreSlim _sendLock = new(1, 1);
 
@@ -118,7 +119,5 @@ public sealed class ChannelsStreamBroadcaster
                 _sendLock.Release();
             }
         }
-
-        public void Dispose() => _sendLock.Dispose();
     }
 }
