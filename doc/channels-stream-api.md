@@ -116,6 +116,10 @@ WebSocket接続が受理された直後に1回送信されます。
 
 `CacheServer:ProgramInfoEvaluationIntervalSeconds` は、キャッシュ済みEPGを現在時刻と照合して現在番組を評価する間隔です。既定値は `60` 秒です。
 
+`CacheServer:ProgramInfoRefreshTimeoutSeconds` は、TVer/NHK/AT-X/放送大学/BS各局サブチャンネルの外部EPG取得（内部フェッチ）1回あたりのタイムアウトです。既定値は `120` 秒です。外部APIが応答を返さずハングした場合でも、このタイムアウトで打ち切って通常の失敗として扱い、`ProgramInfoFailureRetrySeconds` 後に再試行します。これが無いと内部フェッチが無期限に停止し、`ProgramInfoService` の更新ループ全体（番組名配信の評価を含む）が止まってしまいます。
+
+現在番組の評価（`programs` 配信）は、内部フェッチ（TVer/NHK等）と外部インポート（`/api/admin/epg/import` 経由のEDCBアップローダー等）のうち、より新しく更新された方の時刻を鮮度の基準にします。内部フェッチが失敗・ハングしていても、外部インポートが継続していれば番組名配信は止まりません。
+
 `CacheServer:NhkProgramApi:API_Key` を設定すると、`jk103`（NHK BSプレミアム4K、service `s5`）と `jk104`（NHK BS8K、service `s6`）で NHK 番組APIを使います。APIキーは環境変数 `CacheServer__NhkProgramApi__API_Key` でも指定できます。ローカル開発では `jkcnsl-cache/local/appsettings.json` に保存することもできます。このディレクトリはGit管理外で、通常の appsettings 読み込み後に上書きされます。
 
 `CacheServer:NhkProgramApi:Area` はNHKの地域コードです。標準例では東京の `130` を使います。

@@ -27,6 +27,7 @@ public sealed class ProgramInfoService : BackgroundService
     private DateOnly? _loadedBsTbsSubChannelBroadcastDate;
     private DateOnly? _loadedBsFujiSubChannelBroadcastDate;
     private DateTimeOffset _lastFetchUtc = DateTimeOffset.MinValue;
+    private DateTimeOffset _lastImportUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastRefreshFailureUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastNhkFetchUtc = DateTimeOffset.MinValue;
     private DateTimeOffset _lastNhkAttemptUtc = DateTimeOffset.MinValue;
@@ -224,7 +225,7 @@ public sealed class ProgramInfoService : BackgroundService
                             now = DateTimeOffset.UtcNow;
                             broadcastDate = GetBroadcastDate(now);
                         }
-                        await RefreshEpgAsync(broadcastDate, stoppingToken);
+                        await RefreshEpgWithTimeoutAsync(broadcastDate, stoppingToken);
                         _lastRefreshFailureUtc = DateTimeOffset.MinValue;
                     }
                 }
@@ -235,7 +236,7 @@ public sealed class ProgramInfoService : BackgroundService
                     _hasBroadcastSnapshot = true;
                 }
             }
-            catch (OperationCanceledException) { break; }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { break; }
             catch (Exception ex)
             {
                 _lastRefreshFailureUtc = DateTimeOffset.UtcNow;
@@ -245,6 +246,26 @@ public sealed class ProgramInfoService : BackgroundService
 
             try { await Task.Delay(evaluationInterval, stoppingToken); }
             catch (OperationCanceledException) { break; }
+        }
+    }
+
+    // TVer/NHK/AT-X等の外部APIがどこかで応答せず固まった場合に、ExecuteAsync の
+    // ループ自体が無期限に停止して _lastFetchUtc が更新されなくなるのを防ぐためのタイムアウト。
+    // stoppingToken 自体のキャンセル（アプリ終了）とタイムアウトを区別し、タイムアウト時は
+    // 通常の失敗として ExecuteAsync 側のリトライ処理に委ねる。
+    private async Task RefreshEpgWithTimeoutAsync(DateOnly broadcastDate, CancellationToken stoppingToken)
+    {
+        var timeout = TimeSpan.FromSeconds(Math.Max(30,
+            _config.GetValue<int>("CacheServer:ProgramInfoRefreshTimeoutSeconds", 120)));
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(stoppingToken);
+        timeoutCts.CancelAfter(timeout);
+        try
+        {
+            await RefreshEpgAsync(broadcastDate, timeoutCts.Token);
+        }
+        catch (OperationCanceledException) when (!stoppingToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"[ProgramInfo] EPG refresh timed out after {timeout}");
         }
     }
 
@@ -482,6 +503,7 @@ public sealed class ProgramInfoService : BackgroundService
         lock (_lock)
         {
             OverlayProgramMap(_epgPrograms, imported);
+            _lastImportUtc = DateTimeOffset.UtcNow;
         }
 
         var changed = EvaluateCurrentPrograms(DateTimeOffset.UtcNow);
@@ -1750,9 +1772,12 @@ public sealed class ProgramInfoService : BackgroundService
 
         lock (_lock)
         {
-            var dataAge = _lastFetchUtc == DateTimeOffset.MinValue
+            // 内部フェッチ（TVer/NHK等）が長時間失敗・停止していても、EDCBアップローダー等の
+            // 外部インポートが継続していれば現在番組の評価を止めない。どちらか新しい方を採用する。
+            var lastDataUtc = _lastFetchUtc > _lastImportUtc ? _lastFetchUtc : _lastImportUtc;
+            var dataAge = lastDataUtc == DateTimeOffset.MinValue
                 ? TimeSpan.MaxValue
-                : nowUtc - _lastFetchUtc;
+                : nowUtc - lastDataUtc;
             // 取得から極端に時間が経過した EPG はそもそも信用しない
             if (dataAge > dropAfter)
             {
