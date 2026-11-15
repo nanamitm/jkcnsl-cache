@@ -1413,6 +1413,7 @@ body {
 .ch-group-label.collapsed { border-bottom-color: var(--border); }
 .ch-group-label:hover { background: var(--surface-hover); }
 .ch-group-label .dot { flex-shrink: 0; }
+.ch-group-label .force { flex-shrink: 0; margin-right: 4px; }
 .ch-group-toggle {
   width: 0;
   height: 0;
