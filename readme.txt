@@ -261,7 +261,10 @@ co{id} チャンネル: 起動時から定期的にニコニコ生放送を検�
   スクレイピングに失敗した lv は次の検索バッチまで待機し、連続リトライを防止します。
 
 jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとして配信します。
-  既定では無効です。CacheServer:Nichan:Enabled を true にしたうえで、Channels に
+  同梱の appsettings.json では有効になっており、地上波（jk1n〜jk9n）、NHK BS（jk101n / jk103n）、
+  無料 BS（jk141n など 10 局）、AT-X（jk333n）を設定済みです。
+  使わない場合は CacheServer:Nichan:Enabled を false にします（Nichan セクションがない場合も無効です）。
+  チャンネルを追加・変更するには、Enabled が true の状態で、Channels に
   "5ch:"（板とキーワードからスレを自動選択）または "5ch:{スレのURL}"（スレ固定）を設定します。
 
   "Channels": {
@@ -302,7 +305,8 @@ jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとし
     チェックを外したスレのコメントを表示しないようにできます（取得はサーバー側で続きます）。
   ・5ch のレスは既定ではコメント保存・エクスポートの対象にしません（StoreComments）。
   ・インターネットに公開しているサーバーで有効にすると、5ch の書き込みを第三者に再配信することになります。
-    有効にするかどうかは運用者の判断で行ってください。
+    同梱の設定では有効になっているので、有効のまま公開するかどうかは運用者の判断で決め、
+    再配信しない場合は Enabled を false にしてください。
   ・NicoJK からは refugeUri=wss://{サーバー}/watch/{jkID}n で 5ch だけを受信できます。
     refugeMixing=1 と組み合わせると「公式 + 5ch」の混合表示になります。
     避難所と 5ch の両方を受けたい場合は、下の統合ソース（{jkID}m）を使います。
@@ -321,7 +325,7 @@ jk{id}m チャンネル（統合ソース: 避難所 + 5ch）: 避難所（jk{id
   ・NicoJK: refugeUri=wss://{サーバー}/watch/{jkID}m と refugeMixing=1 で「公式 + 避難所 + 5ch」になります。
 
   Nichan の設定項目（括弧内は既定値）:
-    Enabled (false), UserAgent ("Monazilla/1.00 (jkcnsl-cache)"),
+    Enabled (false。同梱の appsettings.json では true), UserAgent ("Monazilla/1.00 (jkcnsl-cache)"),
     SubjectIntervalSeconds (60, 下限30), DatIntervalSeconds (10, 下限5),
     MaxThreadsPerChannel (3, 1〜5), HostMinIntervalMilliseconds (1000, 下限200),
     MaxConcurrentRequests (2), InitialBacklogSeconds (30), PlaybackDelaySeconds,
