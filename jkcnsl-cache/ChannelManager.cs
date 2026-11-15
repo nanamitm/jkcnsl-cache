@@ -85,7 +85,52 @@ public class ChannelManager
         ResolveChannel(channel) != null;
 
     public bool IsConfiguredChannel(string channel) =>
-        !string.IsNullOrEmpty(_config[$"CacheServer:Channels:{channel}"]);
+        !string.IsNullOrEmpty(GetUpstreamValue(channel));
+
+    // 設定上の上流値。統合ソース（jk{ID}m）は設定に書かず、避難所と 5ch が揃っていれば自動で使える
+    private string? GetUpstreamValue(string channel)
+    {
+        var value = _config[$"CacheServer:Channels:{channel}"];
+        if (!string.IsNullOrEmpty(value)) return value;
+        return TryGetMergedSources(channel, out _, out _, out _) ? MergedValue : null;
+    }
+
+    private const string MergedValue = "merged:";
+
+    // jk{ID}m → 避難所 jk{ID}r と 5ch jk{ID}n。避難所が WebSocket の避難所（ローカルストリーム等ではない）で、
+    // 5ch も設定されているときだけ統合ソースを用意する
+    private bool TryGetMergedSources(string channel, out string threadId, out string refugeKey, out string nichanKey)
+    {
+        threadId = refugeKey = nichanKey = "";
+        if (!_config.GetValue("CacheServer:MergedSource:Enabled", true)) return false;
+        if (!Regex.IsMatch(channel, @"^jk\d+m$", RegexOptions.CultureInvariant)) return false;
+        threadId = channel[..^1];
+        refugeKey = threadId + "r";
+        nichanKey = threadId + "n";
+        var refugeValue = _config[$"CacheServer:Channels:{refugeKey}"];
+        var nichanValue = _config[$"CacheServer:Channels:{nichanKey}"];
+        return refugeValue != null &&
+               (refugeValue.StartsWith("wss://", StringComparison.Ordinal) ||
+                refugeValue.StartsWith("ws://", StringComparison.Ordinal)) &&
+               IsNichanValue(nichanValue);
+    }
+
+    // 統合ソースが元ソースを使うときの取得（なければ作って動かす）
+    private UpstreamChannelBase AcquireSourceChannel(string key)
+    {
+        var upstream = GetOrCreateChannel(key, GetUpstreamValue(key) ?? "");
+        upstream.EnsureRunning();
+        return upstream;
+    }
+
+    // 受信者も購読者もいなくなった通常チャンネルを止める（監視専用チャンネルは止めない）
+    private void ReleaseIfIdle(string key)
+    {
+        if (_channels.TryGetValue(key, out var upstream) &&
+            upstream.ClientCount == 0 && !upstream.IsMonitored &&
+            _channels.TryRemove(new KeyValuePair<string, UpstreamChannelBase>(key, upstream)))
+            _ = upstream.StopAsync();
+    }
 
     public async Task HandleWatchSessionAsync(string channel, WebSocket ws, CancellationToken ct)
     {
@@ -93,7 +138,7 @@ public class ChannelManager
         try
         {
             var canonical = ResolveChannel(channel)!;
-            var upstreamValue = _config[$"CacheServer:Channels:{canonical}"]!;
+            var upstreamValue = GetUpstreamValue(canonical)!;
             var isLocalStream = IsLocalStreamValue(upstreamValue);
             var publicBase = (_config["CacheServer:PublicBaseUrl"] ?? "ws://localhost:5000").TrimEnd('/');
             var commentUri = $"{publicBase}/comment/{channel}";
@@ -299,16 +344,14 @@ public class ChannelManager
         try
         {
         var canonical = ResolveChannel(channel)!;
-        var upstreamValue = _config[$"CacheServer:Channels:{canonical}"] ?? "";
+        var upstreamValue = GetUpstreamValue(canonical) ?? "";
         var upstream = GetOrCreateChannel(canonical, upstreamValue);
         upstream.EnsureRunning();
 
         await upstream.AddClientAndWaitAsync(ws, channel, ct);
 
         // 監視専用チャンネルは停止しない。クライアントが全員切断した通常チャンネルは停止
-        if (upstream.ClientCount == 0 && !upstream.IsMonitored &&
-            _channels.TryRemove(new KeyValuePair<string, UpstreamChannelBase>(canonical, upstream)))
-            _ = upstream.StopAsync();
+        ReleaseIfIdle(canonical);
         }
         finally
         {
@@ -331,7 +374,7 @@ public class ChannelManager
     {
         var canonical = ResolveChannel(channel);
         if (canonical == null) return;
-        var upstreamValue = _config[$"CacheServer:Channels:{canonical}"];
+        var upstreamValue = GetUpstreamValue(canonical);
         if (string.IsNullOrEmpty(upstreamValue)) return;
         var upstream = GetOrCreateChannel(canonical, upstreamValue);
         upstream.IsMonitored = true;
@@ -341,13 +384,14 @@ public class ChannelManager
     public (bool Running, string Type, string? CurrentTarget, int Force, int Viewers, long TotalComments, long LastResNo) GetChannelFullStats(string channel)
     {
         var canonical = ResolveChannel(channel) ?? channel;
-        var upstreamValue = _config[$"CacheServer:Channels:{canonical}"] ?? "";
+        var upstreamValue = GetUpstreamValue(canonical) ?? "";
         var type = upstreamValue switch
         {
             _ when upstreamValue.StartsWith("nicovideo:ch", StringComparison.Ordinal) => "公式",
             "nicovideo:" => "非公式",
             _ when IsLocalStreamValue(upstreamValue) => "ローカル",
             _ when IsNichanValue(upstreamValue) => "5ch",
+            MergedValue => "統合",
             _ when upstreamValue.StartsWith("wss://", StringComparison.Ordinal) ||
                    upstreamValue.StartsWith("ws://", StringComparison.Ordinal) => "避難所",
             _ => "-"
@@ -361,7 +405,7 @@ public class ChannelManager
     public (int Force, int Viewers, long TotalComments, long LastResNo) GetChannelStats(string channel)
     {
         var canonical = ResolveChannel(channel) ?? channel;
-        var upstreamValue = _config[$"CacheServer:Channels:{canonical}"];
+        var upstreamValue = GetUpstreamValue(canonical);
         if (!_channels.TryGetValue(canonical, out var ch))
             return (GetForce(canonical, upstreamValue, null), 0, 0, 0);
         var viewers = GetViewerCount(canonical, upstreamValue, ch);
@@ -380,20 +424,20 @@ public class ChannelManager
     private int GetViewerCount(string canonical, string? upstreamValue, UpstreamChannelBase channel)
     {
         if (IsLocalStreamValue(upstreamValue))
-            return channel.ClientCount;
+            return channel.ViewerCount;
 
         // 同じ上流を持つエイリアスチャンネル（ch2646436 等）のクライアントも合算する。
         // _channelsByUpstreamValue はチャンネル作成時に登録済みのため、_channels 全体を
         // 毎回スキャンせず、同一上流のチャンネルキーだけを参照する。
         if (string.IsNullOrEmpty(upstreamValue) ||
             !_channelsByUpstreamValue.TryGetValue(upstreamValue, out var aliasKeys))
-            return channel.ClientCount;
+            return channel.ViewerCount;
 
         var total = 0;
         foreach (var key in aliasKeys.Keys)
         {
             if (_channels.TryGetValue(key, out var ch))
-                total += ch.ClientCount;
+                total += ch.ViewerCount;
         }
         return total;
     }
@@ -458,6 +502,14 @@ public class ChannelManager
                 [channel] = 0;
 
             UpstreamChannelBase ch;
+            if (upstreamValue == MergedValue && TryGetMergedSources(channel, out var threadId, out var refugeKey, out var nichanKey))
+            {
+                // 統合ソースのコメントは元ソース側で保存済みなので、ここでは保存しない
+                return new MergedSourceChannel(channel, threadId, refugeKey, nichanKey,
+                    AcquireSourceChannel, ReleaseIfIdle,
+                    _nichanHttp.Options.HistoryDuration, _nichanHttp.Options.HistoryLimit,
+                    _config, _loggerFactory.CreateLogger<MergedSourceChannel>(), _metrics);
+            }
             if (IsNichanValue(upstreamValue))
             {
                 ch = new NichanUpstreamChannel(channel, upstreamValue[NichanPrefix.Length..],

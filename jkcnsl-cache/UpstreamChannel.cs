@@ -77,6 +77,9 @@ public sealed class UpstreamChannel : UpstreamChannelBase
         await base.AddClientAndWaitAsync(ws, ct);
     }
 
+    protected override IReadOnlyList<ReadOnlyMemory<byte>> GetSubscriberInitialMessages() =>
+        GetControlMessagesSnapshot().Select(m => (ReadOnlyMemory<byte>)m).ToArray();
+
     protected override async Task ConnectAndReceiveAsync(CancellationToken ct)
     {
         // 前回の接続がキャンセルされた際に未完了のままになった投稿を破棄する
