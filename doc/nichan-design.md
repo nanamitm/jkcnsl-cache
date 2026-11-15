@@ -250,5 +250,13 @@ TVTComment の `DatThreadLoader` と同じ方式で取得する。
   追跡中のスレ一覧を `{"nichan_threads":{...}}` として接続直後と変化時に送る。Webクライアントはこれでスレごとの
   表示・非表示を切り替える。サーバーの取得は共有のままなので、絞り込みで 5ch への負荷は変わらない。
   （クライアントから任意のスレを指定させる方式は、指定ごとに取得が増えるため見送った）
+- 受信者がいない 5ch ソースの勢いを subject.txt から出すようにした（`NichanMomentumService`）。5ch ソースは
+  受信者がいる間しか dat を取得しないので、それまでは誰も見ていないチャンネルの勢いが常に 0 だった。
+  `SubjectInterval` ごとに、設定済みの 5ch ソースすべてについてコメント配信と同じ方法でスレを選び
+  （`NichanThreadSelector` / `NichanProgramTracker` に切り出して共用）、選んだスレの `RecentMomentum` の合計を
+  1 分あたりに換算する。`ChannelManager` は、受信者が 0 人の 5ch ソースの勢いとしてこの値を返す
+  （受信者がいる間は従来どおり配信したレス数）。取得は subject.txt だけで、板ごとの共有キャッシュを通るため
+  板 1 つにつき `SubjectInterval` に 1 回。dat は取得しない。`BackgroundMomentum: false` で無効にできる。
+  値は `SubjectInterval` × 3 より古くなると使わない（取得失敗やホスト停止が続いたとき）。
 - 未対応: 
   サーバー側での混合ソース、jkcnsl からの書き込み。

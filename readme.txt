@@ -290,6 +290,12 @@ jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとし
     レス数が1000に達したスレや dat 落ちしたスレは外れ、次の一覧更新で次スレに移ります。
   ・レスは「書き込み時刻 + PlaybackDelaySeconds」に配信します（既定は DatIntervalSeconds + 5 秒）。
     ポーリングでまとめて届いたレスを書き込み時の間隔で流すためです。0 にすると届いた時点ですぐ流します。
+  ・勢いは、コメントを受信しているクライアントがいる間は配信したレス数（直近 1 分）です。
+    誰も受信していない 5ch ソースは dat を取得しないため、subject.txt のレス数の増え方（直近 10 分までの
+    平均。1 分あたりに換算）を勢いとして表示します。このため 5ch ソースを設定した板の subject.txt は、
+    受信者がいなくても SubjectIntervalSeconds ごとに取得します（板ごとに 1 回。dat は取得しません）。
+    起動後 2 分ほどは観測期間が足りず 0 になります。BackgroundMomentum を false にすると取得をやめ、
+    受信者がいない 5ch ソースの勢いは 0 になります。
   ・5ch への書き込みはできません（サーバー経由で投稿すると全員がサーバーの IP で書き込むことになるため）。
     Webクライアントではスレタイがスレへのリンクになります。
   ・Webクライアントでは、追跡中のスレが 2 本以上あるとコメント欄の上にスレの一覧が出て、
@@ -306,7 +312,8 @@ jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとし
     MaxThreadsPerChannel (3, 1〜5), HostMinIntervalMilliseconds (1000, 下限200),
     MaxConcurrentRequests (2), InitialBacklogSeconds (30), PlaybackDelaySeconds,
     MaxCommentLength (120), MaxLines (4, これを超える行数のレスは AA とみなして捨てる),
-    StoreComments (false), HistoryLimit (20), HistorySeconds (30), BlockedWaitMinutes (60)
+    StoreComments (false), HistoryLimit (20), HistorySeconds (30), BlockedWaitMinutes (60),
+    BackgroundMomentum (true)
   5ch から 401/403 が返ったホストへは BlockedWaitMinutes の間アクセスしません。
   429/503 の場合は Retry-After に従います。
   取得状況はステータスページ（StatusPort）の「5ch」タブで確認できます。リクエスト数・304率・エラー・

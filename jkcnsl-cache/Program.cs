@@ -26,6 +26,7 @@ builder.Services.AddSingleton<CommentStorageService>();
 builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanHttpClient>();
 builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanBoardService>();
 builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanBoardCatalog>();
+builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanMomentumService>();
 builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
 builder.Services.AddHostedService<ChannelMonitorService>();
 builder.Services.AddHostedService<ChannelsStatsBroadcastService>();
@@ -33,6 +34,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<MetricsService>())
 builder.Services.AddHostedService(sp => sp.GetRequiredService<EpgStorageService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ProgramInfoService>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<CommentStorageService>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<jkcnsl_cache.Nichan.NichanMomentumService>());
 builder.Services.AddOutputCache();
 
 var bindAddress = builder.Configuration.GetValue<string>("CacheServer:BindAddress") ?? "0.0.0.0";

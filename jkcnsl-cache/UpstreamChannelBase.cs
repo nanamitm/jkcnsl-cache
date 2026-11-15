@@ -378,7 +378,7 @@ public abstract class UpstreamChannelBase
     }
 
     // jk104r（避難所・ローカル）/ jk104n（5ch）→ jk104
-    protected static string NormalizeJkThreadId(string channel) =>
+    protected internal static string NormalizeJkThreadId(string channel) =>
         (channel.EndsWith('r') || channel.EndsWith('n')) &&
         channel.Length > 2 &&
         channel[0] == 'j' &&
