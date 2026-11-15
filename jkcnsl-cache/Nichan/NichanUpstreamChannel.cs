@@ -295,11 +295,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 var programMatch = NichanProgramMatcher.MatchesThread(thread.Title,
                     entry.ProgramOnly ? programOnlyKeys : programKeys);
                 if (entry.ProgramOnly && !programMatch) continue;
-                // 勢い（1 時間あたりのレス数）。立ったばかりのスレが過大にならないよう経過時間に下限を置く
-                var ageHours = thread.Address.CreatedAt is { } created
-                    ? Math.Max(0.1, (now - created).TotalHours)
-                    : 24;
-                candidates.Add((thread, thread.ResCount / ageHours, programMatch));
+                candidates.Add((thread, Momentum(thread, now), programMatch));
             }
         }
         if (succeeded == 0 && lastError != null)
@@ -349,6 +345,20 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         _logger.LogDebug("[{Channel}] 番組が変わりました: {Title} keys={Keys}",
             _channel, title ?? "(不明)", string.Join(",", _currentProgram.Keys));
         return true;
+    }
+
+    // 勢い（1 時間あたりのレス数）。直近の増え方がわかればそれを使う。
+    // 全期間の平均だと、番組中に一気に伸びて今は止まったスレが上位に残り続けるため。
+    // わからないとき（起動直後・観測期間の短い新スレ）は全期間の平均で代用する。
+    // 立ったばかりのスレが過大にならないよう経過時間に下限を置く
+    internal static double Momentum(NichanThreadInfo thread, DateTimeOffset now)
+    {
+        if (thread.RecentMomentum is { } recent)
+            return recent;
+        var ageHours = thread.Address.CreatedAt is { } created
+            ? Math.Max(0.1, (now - created).TotalHours)
+            : 24;
+        return thread.ResCount / ageHours;
     }
 
     private void ApplySelection(IReadOnlyList<SelectedThread> selectedThreads, DateTimeOffset backlogFrom)

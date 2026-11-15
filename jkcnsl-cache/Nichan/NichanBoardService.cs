@@ -4,7 +4,10 @@ using System.Text.RegularExpressions;
 
 namespace jkcnsl_cache.Nichan;
 
-public sealed record NichanThreadInfo(NichanThreadAddress Address, string Title, int ResCount);
+// RecentMomentum: 直近の subject.txt 取得間で増えたレス数から求めた勢い（1 時間あたりのレス数）。
+// 観測期間が足りないとき（起動直後・新スレ）は null。
+public sealed record NichanThreadInfo(NichanThreadAddress Address, string Title, int ResCount,
+    double? RecentMomentum = null);
 
 // subject.txt を板単位で共有キャッシュする。
 // livebs2 のように複数チャンネルが同じ板を使っても、取得は SubjectInterval ごとに 1 回で済む。
@@ -12,6 +15,10 @@ public sealed record NichanThreadInfo(NichanThreadAddress Address, string Title,
 public sealed partial class NichanBoardService
 {
     private static readonly Uri BbsMenuUri = new("https://menu.5ch.io/bbsmenu.html");
+    // 直近の勢いを求める観測窓。番組中に伸びて今は止まったスレが、全期間の平均で上位に残らないようにする
+    internal static readonly TimeSpan MomentumWindow = TimeSpan.FromMinutes(10);
+    // これより短い観測期間では直近の勢いを出さない（1 回分の増減で順位が大きく揺れないように）
+    internal static readonly TimeSpan MomentumMinSpan = TimeSpan.FromMinutes(2);
 
     private readonly NichanHttpClient _http;
     private readonly ILogger<NichanBoardService> _logger;
@@ -48,7 +55,9 @@ public sealed partial class NichanBoardService
                 using var response = await _http.SendAsync(request, ct);
                 if (response.StatusCode == HttpStatusCode.NotModified && cache.Threads != null)
                 {
+                    // 更新がなくても「この時点でレス数が変わっていない」という観測として記録する
                     cache.FetchedAt = DateTimeOffset.UtcNow;
+                    cache.Threads = WithRecentMomentum(cache, cache.Threads, cache.FetchedAt);
                     return cache.Threads;
                 }
                 if (response.StatusCode == HttpStatusCode.NotFound && attempt == 0)
@@ -87,10 +96,10 @@ public sealed partial class NichanBoardService
                     if (address.IsAnnouncement) continue;
                     threads.Add(new NichanThreadInfo(address, entry.Title, entry.ResCount));
                 }
-                cache.Threads = threads;
                 cache.FetchedAt = DateTimeOffset.UtcNow;
+                cache.Threads = WithRecentMomentum(cache, threads, cache.FetchedAt);
                 cache.LastModified = response.Content.Headers.LastModified?.ToString("r");
-                return threads;
+                return cache.Threads;
             }
             throw new NichanException($"板が見つかりません: {board}");
         }
@@ -98,6 +107,36 @@ public sealed partial class NichanBoardService
         {
             cache.Lock.Release();
         }
+    }
+
+    // 取得ごとのレス数を記録し、観測窓の中で最も古い記録との差から直近の勢いを付ける。
+    // cache.Lock を保持した状態で呼ぶ。
+    internal static IReadOnlyList<NichanThreadInfo> WithRecentMomentum(BoardCache cache,
+        IReadOnlyList<NichanThreadInfo> threads, DateTimeOffset now)
+    {
+        var result = new List<NichanThreadInfo>(threads.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var thread in threads)
+        {
+            var key = thread.Address.Identity;
+            seen.Add(key);
+            if (!cache.Samples.TryGetValue(key, out var samples))
+                cache.Samples[key] = samples = new Queue<(DateTimeOffset At, int ResCount)>();
+            samples.Enqueue((now, thread.ResCount));
+            while (samples.Count > 1 && now - samples.Peek().At > MomentumWindow)
+                samples.Dequeue();
+
+            double? momentum = null;
+            var (oldestAt, oldestCount) = samples.Peek();
+            var span = now - oldestAt;
+            if (span >= MomentumMinSpan)
+                momentum = Math.Max(0, thread.ResCount - oldestCount) / span.TotalHours;
+            result.Add(thread with { RecentMomentum = momentum });
+        }
+        // 一覧から消えたスレ（dat 落ち）の記録は捨てる
+        foreach (var key in cache.Samples.Keys.Where(k => !seen.Contains(k)).ToArray())
+            cache.Samples.Remove(key);
+        return result;
     }
 
     // ステータスページ用: 取得したことのある板の一覧
@@ -143,8 +182,11 @@ public sealed partial class NichanBoardService
         }
     }
 
-    private sealed class BoardCache
+    internal sealed class BoardCache
     {
+        // スレ（Identity）ごとの取得時刻とレス数の記録。MomentumWindow より古いものは捨てる
+        public readonly Dictionary<string, Queue<(DateTimeOffset At, int ResCount)>> Samples =
+            new(StringComparer.Ordinal);
         public readonly SemaphoreSlim Lock = new(1, 1);
         public IReadOnlyList<NichanThreadInfo>? Threads;
         public DateTimeOffset FetchedAt = DateTimeOffset.MinValue;
