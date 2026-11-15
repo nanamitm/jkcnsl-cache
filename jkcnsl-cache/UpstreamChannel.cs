@@ -52,6 +52,9 @@ public sealed class UpstreamChannel : UpstreamChannelBase
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
         await _postChannel.Writer.WriteAsync(new PostRequest(json.ToArray(), tcs, timeoutCts.Token),
             timeoutCts.Token);
+        // キューに入れる直前にローカル待避へ切り替わっていたら、取り残さないよう自分で処理する
+        if (IsLocalFallbackActive)
+            await DrainQueuedPostsToLocalAsync();
         try
         {
             return await tcs.Task.WaitAsync(timeoutCts.Token);
@@ -188,11 +191,28 @@ public sealed class UpstreamChannel : UpstreamChannelBase
             "{\"type\":\"error\",\"data\":{\"code\":\"CONNECTION_LOST\"}}"u8.ToArray());
         _pendingPostTcs = null;
         SetLocalFallbackActive(true);
+        await DrainQueuedPostsToLocalAsync();
         }
         catch
         {
+            _pendingPostTcs?.TrySetResult(
+                "{\"type\":\"error\",\"data\":{\"code\":\"CONNECTION_LOST\"}}"u8.ToArray());
+            _pendingPostTcs = null;
             SetLocalFallbackActive(true);
+            await DrainQueuedPostsToLocalAsync();
             throw;
+        }
+    }
+
+    // 上流につながる前（初回接続中・再接続待ち）に積まれた投稿は、ローカル待避に入った時点でローカルコメントとして処理する。
+    // こうしないと次の接続まで誰もキューを読まず、投稿は 10 秒待ってタイムアウトになる
+    private async Task DrainQueuedPostsToLocalAsync()
+    {
+        while (_postChannel.Reader.TryRead(out var req))
+        {
+            if (req.IsCanceled) continue;
+            req.Tcs.TrySetResult(await PostLocalFallbackCommentAsync(
+                req.Json, null, _fallbackMaxCommentLength, CancellationToken.None));
         }
     }
 
