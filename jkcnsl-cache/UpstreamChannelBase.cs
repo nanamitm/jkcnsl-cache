@@ -12,6 +12,8 @@ public abstract class UpstreamChannelBase
     private readonly MetricsService? _metrics;
     private readonly ConcurrentDictionary<Guid, WebSocket> _clients = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _clientSendLocks = new();
+    // 同じプロセス内の購読者（統合ソース jk{ID}m が避難所・5ch を受け取るのに使う）
+    private readonly ConcurrentDictionary<Guid, Subscriber> _subscribers = new();
     private readonly TimeSpan _broadcastSendTimeout;
     private CancellationTokenSource _cts = new();
     private Task _runTask = Task.CompletedTask;
@@ -60,7 +62,10 @@ public abstract class UpstreamChannelBase
     public virtual Task<ReadOnlyMemory<byte>> PostCommentAsync(ReadOnlyMemory<byte> json, CancellationToken ct)
         => Task.FromResult<ReadOnlyMemory<byte>>(
             "{\"type\":\"error\",\"data\":{\"code\":\"NOT_CONNECTED\"}}"u8.ToArray());
-    public virtual int ClientCount => _clients.Values.Count(c => c.State == WebSocketState.Open);
+    // 購読者も 1 クライアントとして数える（5ch の dat 取得や、受信者がいなくなったときの停止判定に効かせるため）
+    public virtual int ClientCount => _clients.Values.Count(c => c.State == WebSocketState.Open) + _subscribers.Count;
+    // 視聴者数の集計用。購読者は 1 ではなく、その先にいる実際の視聴者数で数える
+    public int ViewerCount => ClientCount - _subscribers.Count + _subscribers.Values.Sum(s => s.Viewers());
     public virtual Task AddClientAndWaitAsync(WebSocket ws, string requestedChannel, CancellationToken ct) =>
         AddClientAndWaitAsync(ws, ct);
     public long TotalComments => Interlocked.Read(ref _totalComments);
@@ -196,6 +201,37 @@ public abstract class UpstreamChannelBase
 
     // コメントクライアントの接続直後に送るメッセージ（直近コメントの履歴など）
     protected virtual IReadOnlyList<ReadOnlyMemory<byte>> GetInitialMessages() => [];
+    // 購読者の登録直後に渡すメッセージ。既定はコメントクライアントと同じ
+    protected virtual IReadOnlyList<ReadOnlyMemory<byte>> GetSubscriberInitialMessages() => GetInitialMessages();
+
+    // このチャンネルが配信するメッセージをプロセス内で受け取る。
+    // onMessage はブロードキャストの途中で同期的に呼ばれるので、すぐ戻ること（渡されたバッファは呼び出し後に再利用され得る）。
+    // viewers はこの購読の先にいる視聴者数（視聴者数の集計に使う）。
+    public IDisposable Subscribe(Action<ReadOnlyMemory<byte>> onMessage, Func<int> viewers)
+    {
+        var id = Guid.NewGuid();
+        _subscribers[id] = new Subscriber(onMessage, viewers);
+        foreach (var message in GetSubscriberInitialMessages())
+            InvokeSubscriber(id, onMessage, message);
+        return new Subscription(this, id);
+    }
+
+    private void InvokeSubscriber(Guid id, Action<ReadOnlyMemory<byte>> onMessage, ReadOnlyMemory<byte> message)
+    {
+        try { onMessage(message); }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "[{Channel}] 購読者への配信に失敗したため購読を解除します", _channel);
+            _subscribers.TryRemove(id, out _);
+        }
+    }
+
+    private sealed record Subscriber(Action<ReadOnlyMemory<byte>> OnMessage, Func<int> Viewers);
+
+    private sealed class Subscription(UpstreamChannelBase owner, Guid id) : IDisposable
+    {
+        public void Dispose() => owner._subscribers.TryRemove(id, out _);
+    }
 
     public virtual async Task AddClientAndWaitAsync(WebSocket ws, CancellationToken ct)
     {
@@ -281,6 +317,9 @@ public abstract class UpstreamChannelBase
     {
         if (CommentStorage != null && message.Span.StartsWith("{\"chat\""u8))
             CommentStorage.TryEnqueue(_channel, message);
+
+        foreach (var (id, subscriber) in _subscribers)
+            InvokeSubscriber(id, subscriber.OnMessage, message);
 
         var tasks = _clients.ToArray()
             .Where(kv => kv.Value.State == WebSocketState.Open)

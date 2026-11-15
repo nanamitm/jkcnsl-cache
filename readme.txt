@@ -305,6 +305,20 @@ jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとし
     有効にするかどうかは運用者の判断で行ってください。
   ・NicoJK からは refugeUri=wss://{サーバー}/watch/{jkID}n で 5ch だけを受信できます。
     refugeMixing=1 と組み合わせると「公式 + 5ch」の混合表示になります。
+    避難所と 5ch の両方を受けたい場合は、下の統合ソース（{jkID}m）を使います。
+
+jk{id}m チャンネル（統合ソース: 避難所 + 5ch）: 避難所（jk{id}r）と 5ch（jk{id}n）のコメントを 1 本にまとめて配信します。
+  NicoJK のように避難所を 1 つしか設定できないクライアントでも、両方のコメントを受け取れます。
+  ・Channels への設定は不要です。jk{id}r が WebSocket の避難所（ws:// / wss://）で、jk{id}n が 5ch ソースのとき
+    自動で使えます（CacheServer:MergedSource:Enabled を false にすると無効になります）。
+  ・公式（jk{id}）は含みません。クライアントが公式を別に受けている前提で、混ぜると二重に流れるためです。
+  ・上流には新たに接続せず、サーバー内の jk{id}r / jk{id}n を購読します（5ch の取得回数は増えません）。
+  ・2 つのソースの no が重ならないよう no を振り直し、vpos は統合ソースの vposBaseTime 基準に直します。
+    thread はそのまま（避難所が転送してきたコメントの thread も変えないので、jkcnsl の転送コメント判定はそのまま効きます）。
+  ・各コメントに "source":"refuge" / "nichan" を付けます（避難所互換クライアントは無視します）。
+  ・投稿は避難所へ転送します（5ch へは書き込めません）。
+  ・勢いリストのソース一覧には出しません。視聴者数は避難所側に数えます。
+  ・NicoJK: refugeUri=wss://{サーバー}/watch/{jkID}m と refugeMixing=1 で「公式 + 避難所 + 5ch」になります。
 
   Nichan の設定項目（括弧内は既定値）:
     Enabled (false), UserAgent ("Monazilla/1.00 (jkcnsl-cache)"),
@@ -354,6 +368,7 @@ jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとし
 【NicoJK から使う場合（避難所として）】
 NicoJK.ini:
   refugeUri=ws[s]://{サーバーIP}:{ポート}/watch/{jkID}
+  （避難所と 5ch をまとめて受けるなら /watch/{jkID}m。上の「jk{id}m チャンネル」を参照）
 
 refugeMixing=1 の場合は ch{ID} 形式のエイリアスも Channels に登録してください。
 
