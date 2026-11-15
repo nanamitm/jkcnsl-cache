@@ -100,6 +100,17 @@ public sealed partial class NichanBoardService
         }
     }
 
+    // ステータスページ用: 取得したことのある板の一覧
+    public NichanBoardStatusDto[] GetBoardStatuses() =>
+        _boards
+            .OrderBy(kv => kv.Key, StringComparer.Ordinal)
+            .Select(kv => new NichanBoardStatusDto(
+                kv.Key,
+                _moved.TryGetValue(kv.Key, out var moved) ? moved.AbsoluteUri : null,
+                kv.Value.Threads?.Count ?? 0,
+                kv.Value.Threads == null ? null : kv.Value.FetchedAt))
+            .ToArray();
+
     private async Task<Uri> ResolveMovedBoardAsync(Uri board, CancellationToken ct)
     {
         await _menuLock.WaitAsync(ct);

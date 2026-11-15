@@ -234,5 +234,7 @@ TVTComment の `DatThreadLoader` と同じ方式で取得する。
   既存チャンネルと同じく停止し、/watch だけが残っている場合も 2 分で取得を休止する。
 - 新規接続時の履歴送信のため、`UpstreamChannelBase` に `GetInitialMessages()` を追加した。
 - Webクライアントは、未設定の 5ch ソースの空き行を表示しない（既存のソース枠は従来どおり）。
-- 未対応: `MetricsService` / ステータスページへの 5ch 固有の集計、`ProgramInfoService` の番組名を使ったスレ選択、
+- ステータスページに「5ch」タブ（`/api/admin/nichan`）を追加した。集計は `NichanStats`（`NichanHttpClient` が記録）で、
+  `MetricsService` とは独立に 5 秒枠 × 180 個を保持する。
+- 未対応: `ProgramInfoService` の番組名を使ったスレ選択、
   サーバー側での混合ソース、jkcnsl からの書き込み。

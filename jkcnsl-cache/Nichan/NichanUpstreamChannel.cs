@@ -64,6 +64,30 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         Task.FromResult<ReadOnlyMemory<byte>>(
             "{\"type\":\"error\",\"data\":{\"code\":\"NOT_SUPPORTED\"}}"u8.ToArray());
 
+    // ステータスページ用のスナップショット
+    public NichanChannelStatusDto GetStatusSnapshot(int clients)
+    {
+        lock (_lock)
+        {
+            var threads = _threads.Values
+                .OrderByDescending(t => t.Loader.ResCount)
+                .Select(t => new NichanThreadStatusDto(
+                    string.IsNullOrEmpty(t.Title) ? t.Loader.Address.Key : t.Title,
+                    t.Loader.Address.ThreadUri.ToString(),
+                    t.Loader.ResCount,
+                    t.Finished,
+                    t.Dropping,
+                    t.Error,
+                    t.RetryAt > DateTimeOffset.UtcNow ? t.RetryAt : null,
+                    t.LastFetchAt,
+                    t.LastNewResAt,
+                    t.Queued))
+                .ToArray();
+            return new NichanChannelStatusDto(_channel, Status, _statusText, IsRunning, clients,
+                TotalComments, Force, _pending.Count, threads);
+        }
+    }
+
     protected override IReadOnlyList<ReadOnlyMemory<byte>> GetInitialMessages()
     {
         lock (_lock)
@@ -323,6 +347,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         var added = 0;
         lock (_lock)
         {
+            state.LastFetchAt = now;
             state.Failures = 0;
             state.Error = null;
             if (state.Loader.Title != null)
@@ -348,6 +373,14 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     due = now + _options.PlaybackDelay;
                 _pending.Enqueue(new PendingRes(postedAt, userId, text), (due, ++_pendingSeq));
                 added++;
+            }
+        }
+        if (added > 0)
+        {
+            lock (_lock)
+            {
+                state.LastNewResAt = now;
+                state.Queued += added;
             }
         }
         if (added > 0)
@@ -458,6 +491,9 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         public int Failures { get; set; }
         public bool Finished { get; set; }
         public bool Dropping { get; set; }
+        public DateTimeOffset? LastFetchAt { get; set; }
+        public DateTimeOffset? LastNewResAt { get; set; }
+        public long Queued { get; set; }
         public string? Error { get; set; }
     }
 }

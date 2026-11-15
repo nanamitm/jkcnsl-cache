@@ -33,14 +33,9 @@ public sealed class NichanHttpClient : IDisposable
     private readonly ILogger<NichanHttpClient> _logger;
     private readonly SemaphoreSlim _concurrency;
     private readonly ConcurrentDictionary<string, HostState> _hosts = new(StringComparer.OrdinalIgnoreCase);
-    private long _requests;
-    private long _errors;
-    private long _rateLimited;
 
     public NichanOptions Options => _options;
-    public long TotalRequests => Interlocked.Read(ref _requests);
-    public long TotalErrors => Interlocked.Read(ref _errors);
-    public long TotalRateLimited => Interlocked.Read(ref _rateLimited);
+    public NichanStats Stats { get; } = new();
 
     public NichanHttpClient(IConfiguration config, ILogger<NichanHttpClient> logger)
     {
@@ -79,7 +74,10 @@ public sealed class NichanHttpClient : IDisposable
             {
                 var now = DateTimeOffset.UtcNow;
                 if (state.BlockedUntil > now)
+                {
+                    Stats.RecordSkippedBlocked(host);
                     throw new NichanHostBlockedException(host, state.BlockedUntil);
+                }
                 var wait = state.LastRequest + _options.HostMinInterval - now;
                 if (wait > TimeSpan.Zero)
                     await Task.Delay(wait, ct);
@@ -90,7 +88,6 @@ public sealed class NichanHttpClient : IDisposable
                 state.Gate.Release();
             }
 
-            Interlocked.Increment(ref _requests);
             HttpResponseMessage response;
             try
             {
@@ -98,19 +95,19 @@ public sealed class NichanHttpClient : IDisposable
             }
             catch (HttpRequestException ex)
             {
-                Interlocked.Increment(ref _errors);
+                Stats.RecordNetworkError(host);
                 throw new NichanException($"5ch との通信に失敗しました: {ex.Message}", ex);
             }
             catch (TaskCanceledException ex) when (!ct.IsCancellationRequested)
             {
-                Interlocked.Increment(ref _errors);
+                Stats.RecordNetworkError(host);
                 throw new NichanException("5ch との通信がタイムアウトしました", ex);
             }
 
             var code = (int)response.StatusCode;
+            Stats.RecordResponse(host, code, response.Content.Headers.ContentLength ?? 0);
             if (code is 401 or 403)
             {
-                Interlocked.Increment(ref _errors);
                 var until = DateTimeOffset.UtcNow + _options.BlockedWait;
                 state.BlockedUntil = until;
                 _logger.LogWarning("5ch {Host} から {Code} が返りました。{Until} までこのホストへのアクセスを停止します: {Uri}",
@@ -120,7 +117,6 @@ public sealed class NichanHttpClient : IDisposable
             }
             if (code is 429 or 503)
             {
-                Interlocked.Increment(ref _rateLimited);
                 var retry = response.Headers.RetryAfter;
                 var delay = retry?.Delta ?? (retry?.Date - DateTimeOffset.UtcNow) ?? TimeSpan.FromMinutes(1);
                 if (delay < TimeSpan.FromSeconds(10)) delay = TimeSpan.FromSeconds(10);
@@ -132,8 +128,6 @@ public sealed class NichanHttpClient : IDisposable
                 response.Dispose();
                 throw new NichanHostBlockedException(host, until);
             }
-            if (code >= 500)
-                Interlocked.Increment(ref _errors);
             return response;
         }
         finally

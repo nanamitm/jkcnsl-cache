@@ -154,6 +154,9 @@ StatusOnly(app.MapGet("/api/logs",
 StatusOnly(app.MapGet("/api/admin/metrics", (MetricsService metrics, CommentStorageService storage) =>
     Results.Json(metrics.CreatePayload(storage.GetStatus()))));
 
+// 5ch 取得状況 API（ステータスポートのみ）
+StatusOnly(app.MapGet("/api/admin/nichan", (ChannelManager mgr) => Results.Json(mgr.GetNichanStatus())));
+
 // コメントエクスポート API（ステータスポートのみ）
 // GET /api/comments/export?date=2026-06-26[&channel=jk1]
 StatusOnly(app.MapGet("/api/comments/export",

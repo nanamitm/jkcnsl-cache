@@ -299,6 +299,9 @@ jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとし
     StoreComments (false), HistoryLimit (20), HistorySeconds (30), BlockedWaitMinutes (60)
   5ch から 401/403 が返ったホストへは BlockedWaitMinutes の間アクセスしません。
   429/503 の場合は Retry-After に従います。
+  取得状況はステータスページ（StatusPort）の「5ch」タブで確認できます。リクエスト数・304率・エラー・
+  429/503 の推移、ホストごとの集計と停止状態、ソースごとに追跡中のスレ、取得した板を表示します
+  （JSON は /api/admin/nichan。集計はメモリ上のみで、再起動すると消えます）。
 
 ■Webクライアントの使い方
 

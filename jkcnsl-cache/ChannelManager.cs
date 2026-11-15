@@ -483,6 +483,36 @@ public class ChannelManager
 
     private const string NichanPrefix = "5ch:";
 
+    // ステータスページ「5ch」タブ用: 設定済みの 5ch ソースと、その取得状況
+    public NichanStatusPayload GetNichanStatus()
+    {
+        var options = _nichanHttp.Options;
+        var (totals, series, hosts) = _nichanHttp.Stats.Snapshot(_nichanHttp.GetBlockedUntil);
+        var order = _channelCatalog.All
+            .Select((info, index) => (info.Video + "n", index))
+            .ToDictionary(x => x.Item1, x => x.index, StringComparer.Ordinal);
+        var channels = _config.GetSection("CacheServer:Channels").GetChildren()
+            .Where(section => IsNichanValue(section.Value))
+            .OrderBy(section => order.TryGetValue(section.Key, out var index) ? index : int.MaxValue)
+            .ThenBy(section => section.Key, StringComparer.Ordinal)
+            .Select(section => _channels.TryGetValue(section.Key, out var ch) && ch is NichanUpstreamChannel nichan
+                ? nichan.GetStatusSnapshot(ch.ClientCount)
+                : new NichanChannelStatusDto(section.Key, "idle", null, false, 0, 0, 0, 0, []))
+            .ToArray();
+        return new NichanStatusPayload(
+            options.Enabled,
+            new
+            {
+                subjectIntervalSec = (int)options.SubjectInterval.TotalSeconds,
+                datIntervalSec = (int)options.DatInterval.TotalSeconds,
+                maxThreadsPerChannel = options.MaxThreadsPerChannel,
+                playbackDelaySec = (int)options.PlaybackDelay.TotalSeconds,
+                hostMinIntervalMs = (int)options.HostMinInterval.TotalMilliseconds,
+                storeComments = options.StoreComments,
+            },
+            totals, series, hosts, _nichanBoards.GetBoardStatuses(), channels);
+    }
+
     private static bool IsNichanValue(string? upstreamValue) =>
         upstreamValue?.StartsWith(NichanPrefix, StringComparison.OrdinalIgnoreCase) == true;
 

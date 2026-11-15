@@ -32,6 +32,20 @@ internal static class StatusPage
         .type-unofficial { color: #ce93d8; }
         .type-refuge     { color: #80cbc4; }
         .type-local      { color: #a5d6a7; }
+        .type-nichan     { color: #f48fb1; }
+        .ntable { margin-bottom: 12px; }
+        .ntable th, .ntable td { text-align: left; white-space: nowrap; }
+        .ntable td.wrap { white-space: normal; }
+        .ntable th.n, .ntable td.n { text-align: right; }
+        .ntable a { color: #f48fb1; text-decoration: none; }
+        .ntable a:hover { text-decoration: underline; }
+        .thread { display: block; font-size: 0.78rem; line-height: 1.5; }
+        .thread .meta { color: #888; }
+        .thread.done { color: #666; }
+        .err  { color: #ef5350; }
+        .warn { color: #ffb74d; }
+        .muted { color: #666; }
+        #nichan-settings { font-size: 0.75rem; color: #888; margin-bottom: 10px; }
         .sub { font-size: 0.75rem; color: #888; display: block; margin-top: 3px; }
         .sub-on        { color: #81c784; }
         .sub-off       { color: #555; }
@@ -67,6 +81,7 @@ internal static class StatusPage
           <button class="tab-btn active" data-tab="channels">チャンネル</button>
           <button class="tab-btn" data-tab="clients">クライアント</button>
           <button class="tab-btn" data-tab="system">システム</button>
+          <button class="tab-btn" data-tab="nichan">5ch</button>
         </div>
         <section id="tab-channels" class="tab-panel">
         <table>
@@ -116,6 +131,38 @@ internal static class StatusPage
             <div class="card"><div class="card-label">最終書込</div><div class="card-value" id="m-store-last">-</div></div>
           </div>
         </section>
+        <section id="tab-nichan" class="tab-panel" hidden>
+          <div id="nichan-settings"></div>
+          <div class="cards">
+            <div class="card"><div class="card-label">取得中のソース</div><div class="card-value" id="n-active">-</div></div>
+            <div class="card"><div class="card-label">リクエスト/5秒</div><div class="card-value" id="n-req">-</div></div>
+            <div class="card"><div class="card-label">リクエスト累計</div><div class="card-value" id="n-req-total">-</div></div>
+            <div class="card"><div class="card-label">304（更新なし）率</div><div class="card-value" id="n-304">-</div></div>
+            <div class="card"><div class="card-label">エラー累計</div><div class="card-value" id="n-err">-</div></div>
+            <div class="card"><div class="card-label">429/503 累計</div><div class="card-value" id="n-rate">-</div></div>
+            <div class="card"><div class="card-label">停止中のホスト</div><div class="card-value" id="n-blocked">-</div></div>
+            <div class="card"><div class="card-label">受信量累計</div><div class="card-value" id="n-bytes">-</div></div>
+          </div>
+          <div class="grid">
+            <div class="chart"><div class="chart-title">リクエスト（5秒ごと）</div><canvas id="chart-nichan-req" width="640" height="180"></canvas></div>
+            <div class="chart"><div class="chart-title">エラー・制限（5秒ごと）</div><canvas id="chart-nichan-err" width="640" height="180"></canvas></div>
+          </div>
+          <h2>ソース</h2>
+          <table class="ntable">
+            <thead><tr><th>ソース</th><th>状態</th><th class="n">受信者</th><th class="n">勢い</th><th class="n">配信累計</th><th class="n">配信待ち</th><th>追跡中のスレ</th></tr></thead>
+            <tbody id="nichan-channels"></tbody>
+          </table>
+          <h2>ホスト</h2>
+          <table class="ntable">
+            <thead><tr><th>ホスト</th><th class="n">リクエスト</th><th class="n">304</th><th class="n">エラー</th><th class="n">429/503</th><th class="n">見送り</th><th class="n">受信量</th><th>最終応答</th><th>状態</th></tr></thead>
+            <tbody id="nichan-hosts"></tbody>
+          </table>
+          <h2>板（subject.txt）</h2>
+          <table class="ntable">
+            <thead><tr><th>板</th><th class="n">スレ数</th><th>最終取得</th><th>移転先</th></tr></thead>
+            <tbody id="nichan-boards"></tbody>
+          </table>
+        </section>
         <script>
         function fmtUptime(sec) {
           const d = Math.floor(sec / 86400);
@@ -136,7 +183,8 @@ internal static class StatusPage
             document.querySelectorAll('.tab-panel').forEach(panel => {
               panel.hidden = panel.id !== 'tab-' + btn.dataset.tab;
             });
-            if (btn.dataset.tab !== 'channels') refreshMetrics();
+            if (btn.dataset.tab === 'nichan') refreshNichan();
+            else if (btn.dataset.tab !== 'channels') refreshMetrics();
           });
         });
         function sourceTypeClass(t) {
@@ -144,12 +192,15 @@ internal static class StatusPage
                : t === 'unofficial' ? 'type-unofficial'
                : t === 'refuge' ? 'type-refuge'
                : t === 'local' ? 'type-local'
+               : t === 'nichan' ? 'type-nichan'
                : '';
         }
         function fmtTarget(t) {
           if (!t) return '';
           if (t.startsWith('wss://') || t.startsWith('ws://'))
             return esc(t.replace(/^wss?:\/\//, '').replace(/\/.*$/, ''));
+          if (t.startsWith('https://'))
+            return `<a class="nico-link" href="${esc(t)}" target="_blank" rel="noreferrer">${esc(t.replace(/^https:\/\//, '').replace(/\/$/, ''))}</a>`;
           if (t.match(/^(?:lv|ch)\d+$/))
             return `<a class="nico-link" href="https://live.nicovideo.jp/watch/${esc(t)}" target="_blank">${esc(t)}</a>`;
           return esc(t);
@@ -341,6 +392,110 @@ internal static class StatusPage
         }
         refreshMetrics();
         setInterval(refreshMetrics, 5000);
+
+        function fmtBytes(b) {
+          b = Number(b ?? 0);
+          if (b >= 1024 * 1024 * 1024) return (b / 1024 / 1024 / 1024).toFixed(2) + ' GB';
+          if (b >= 1024 * 1024) return (b / 1024 / 1024).toFixed(1) + ' MB';
+          if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+          return b + ' B';
+        }
+        function fmtAgo(iso) {
+          if (!iso) return '-';
+          const sec = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+          if (sec < 60) return sec + '秒前';
+          if (sec < 3600) return Math.floor(sec / 60) + '分前';
+          return Math.floor(sec / 3600) + '時間前';
+        }
+        function fmtTime(iso) {
+          return iso ? new Date(iso).toLocaleTimeString() : '-';
+        }
+        const nichanStatusLabel = {
+          running: ['取得中', 'on'], idle: ['停止', 'muted'], noThread: ['対応スレなし', 'warn'],
+          blocked: ['アクセス停止中', 'err'], error: ['エラー', 'err'], disabled: ['無効', 'muted'],
+        };
+        function nichanThreadHtml(t) {
+          const cls = t.finished || t.dropping ? 'thread done' : 'thread';
+          const tag = t.finished ? ' [終了]' : t.dropping ? ' [選択外]' : '';
+          const err = t.error
+            ? ` <span class="err">${esc(t.error)}${t.retryAt ? '（' + esc(fmtTime(t.retryAt)) + ' に再試行）' : ''}</span>`
+            : '';
+          return `<span class="${cls}"><a href="${esc(t.url)}" target="_blank" rel="noreferrer">${esc(t.title)}</a>` +
+            ` <span class="meta">(${num(t.resCount)}) 取得 ${esc(fmtAgo(t.lastFetchAt))} / 新着 ${esc(fmtAgo(t.lastNewResAt))} / 配信対象 ${num(t.queued)}${esc(tag)}</span>${err}</span>`;
+        }
+        async function refreshNichan() {
+          try {
+            const data = await (await fetch('/api/admin/nichan')).json();
+            const totals = data.totals ?? {};
+            const series = (data.series ?? []).map(p => ({ time: p.time, ...(p.counters ?? {}) }));
+            // 最後の枠は集計途中なので、1 つ前の枠を「直近 5 秒」とする
+            const last = series.length > 1 ? series[series.length - 2] : (series[0] ?? {});
+            const o = data.options ?? {};
+            document.getElementById('nichan-settings').textContent = data.enabled
+              ? `有効 / スレ一覧 ${o.subjectIntervalSec}秒ごと / dat ${o.datIntervalSec}秒ごと / 1ソース最大 ${o.maxThreadsPerChannel}スレ / 配信遅延 ${o.playbackDelaySec}秒 / 同一ホスト間隔 ${o.hostMinIntervalMs}ms / 保存 ${o.storeComments ? 'する' : 'しない'}`
+              : '無効（CacheServer:Nichan:Enabled が false）';
+            const channels = data.channels ?? [];
+            const hosts = data.hosts ?? [];
+            setText('n-active', `${channels.filter(c => c.running).length} / ${channels.length}`);
+            setText('n-req', num(last.requests));
+            setText('n-req-total', num(totals.requests));
+            setText('n-304', totals.requests ? Math.round(totals.notModified / totals.requests * 100) + '%' : '-');
+            setText('n-err', num(totals.errors));
+            setText('n-rate', num(totals.rateLimited));
+            setText('n-blocked', num(hosts.filter(h => h.blockedUntil).length));
+            setText('n-bytes', fmtBytes(totals.bytes));
+            drawLine(document.getElementById('chart-nichan-req'), series, [
+              { key: 'requests', label: 'request', color: '#f48fb1' },
+              { key: 'notModified', label: '304', color: '#80cbc4' },
+            ]);
+            drawBars(document.getElementById('chart-nichan-err'), series, [
+              { key: 'errors', label: 'error', color: '#ef5350' },
+              { key: 'rateLimited', label: '429/503', color: '#ffb74d' },
+              { key: 'skippedBlocked', label: 'skip', color: '#ce93d8' },
+            ]);
+            document.getElementById('nichan-channels').innerHTML = channels.length ? channels.map(c => {
+              const [label, cls] = nichanStatusLabel[c.status] ?? [c.status, ''];
+              const threads = (c.threads ?? []).map(nichanThreadHtml).join('');
+              const note = !threads && c.statusText ? `<span class="thread muted">${esc(c.statusText)}</span>` : '';
+              return `<tr>
+                <td class="type-nichan">${esc(c.key)}</td>
+                <td class="${cls}">${esc(label)}</td>
+                <td class="n">${num(c.clients)}</td>
+                <td class="n force">${num(c.force)}</td>
+                <td class="n">${num(c.delivered)}</td>
+                <td class="n">${num(c.pending)}</td>
+                <td class="wrap">${threads}${note}</td>
+              </tr>`;
+            }).join('') : '<tr><td colspan="7" class="muted">5ch ソースは設定されていません</td></tr>';
+            document.getElementById('nichan-hosts').innerHTML = hosts.length ? hosts.map(h => {
+              const c = h.counters ?? {};
+              const state = h.blockedUntil
+                ? `<span class="err">${esc(fmtTime(h.blockedUntil))} まで停止</span>`
+                : '<span class="on">正常</span>';
+              return `<tr>
+                <td>${esc(h.host)}</td>
+                <td class="n">${num(c.requests)}</td>
+                <td class="n">${num(c.notModified)}</td>
+                <td class="n${c.errors ? ' err' : ''}">${num(c.errors)}</td>
+                <td class="n${c.rateLimited ? ' warn' : ''}">${num(c.rateLimited)}</td>
+                <td class="n">${num(c.skippedBlocked)}</td>
+                <td class="n">${fmtBytes(c.bytes)}</td>
+                <td>${h.lastStatus ? esc(h.lastStatus) : '<span class="err">通信失敗</span>'} ${esc(fmtAgo(h.lastRequestAt))}</td>
+                <td>${state}</td>
+              </tr>`;
+            }).join('') : '<tr><td colspan="9" class="muted">まだアクセスしていません</td></tr>';
+            const boards = data.boards ?? [];
+            document.getElementById('nichan-boards').innerHTML = boards.length ? boards.map(b => `<tr>
+                <td><a href="${esc(b.board)}" target="_blank" rel="noreferrer">${esc(b.board)}</a></td>
+                <td class="n">${num(b.threads)}</td>
+                <td>${esc(fmtAgo(b.fetchedAt))}</td>
+                <td>${b.movedTo ? esc(b.movedTo) : '<span class="muted">-</span>'}</td>
+              </tr>`).join('') : '<tr><td colspan="4" class="muted">まだ取得していません</td></tr>';
+          } catch { }
+        }
+        setInterval(() => {
+          if (!document.getElementById('tab-nichan').hidden) refreshNichan();
+        }, 5000);
 
         // ログ SSE
         const logEl = document.getElementById('log');
