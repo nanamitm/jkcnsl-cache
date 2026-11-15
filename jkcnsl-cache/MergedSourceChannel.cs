@@ -25,7 +25,8 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
     private readonly long _vposBaseTicks = DateTimeOffset.UtcNow.UtcTicks;
     private readonly object _lock = new();
     private readonly Queue<(DateTimeOffset At, byte[] Message)> _history = new();
-    private byte[]? _refugeThreadMessage;
+    // 避難所が接続直後に送る制御メッセージ（ping ps → thread → ping pf）。届いた順のまま持つ
+    private readonly List<byte[]> _refugeControlMessages = new();
     private byte[]? _nichanThreadsMessage;
     private long _nextNo;
     private string _status = "idle";
@@ -111,15 +112,16 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
         }
     }
 
-    // 新しいクライアントには、避難所の直近の thread 情報・5ch のスレ一覧・5ch の直近のレスを送る
+    // 新しいクライアントには、避難所の直近の制御メッセージ（ping ps・thread 情報・ping pf。避難所単体と同じ並び）・
+    // 5ch のスレ一覧・5ch の直近のレスを送る
     // （避難所単体のクライアントにも過去コメントは送っていないので、避難所のコメントは履歴に含めない）
     protected override IReadOnlyList<ReadOnlyMemory<byte>> GetInitialMessages()
     {
         lock (_lock)
         {
             TrimHistory(DateTimeOffset.UtcNow);
-            var messages = new List<ReadOnlyMemory<byte>>(_history.Count + 2);
-            if (_refugeThreadMessage != null) messages.Add(_refugeThreadMessage);
+            var messages = new List<ReadOnlyMemory<byte>>(_refugeControlMessages.Count + _history.Count + 1);
+            messages.AddRange(_refugeControlMessages.Select(m => (ReadOnlyMemory<byte>)m));
             if (_nichanThreadsMessage != null) messages.Add(_nichanThreadsMessage);
             messages.AddRange(_history.Select(h => (ReadOnlyMemory<byte>)h.Message));
             return messages;
@@ -208,8 +210,8 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
             {
                 lock (_lock)
                 {
-                    if (source == RefugeSource && root.TryGetProperty("thread", out _))
-                        _refugeThreadMessage = output;
+                    if (source == RefugeSource && GetRefugeControlKind(root) is { } kind)
+                        StoreRefugeControlMessage(kind, output);
                     else if (source == NichanSource && root.TryGetProperty("nichan_threads", out _))
                         _nichanThreadsMessage = output;
                     else if (source == NichanSource && root.TryGetProperty("chat", out _))
@@ -225,6 +227,41 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
         {
             return null;
         }
+    }
+
+    private enum RefugeControlKind { PingStart, Thread, PingFinish }
+
+    private static RefugeControlKind? GetRefugeControlKind(JsonElement root)
+    {
+        if (root.TryGetProperty("thread", out _)) return RefugeControlKind.Thread;
+        if (root.TryGetProperty("ping", out var ping) && ping.ValueKind == JsonValueKind.Object &&
+            ping.TryGetProperty("content", out var content) && content.ValueKind == JsonValueKind.String)
+        {
+            var text = content.GetString()!;
+            if (text.StartsWith("ps:", StringComparison.Ordinal)) return RefugeControlKind.PingStart;
+            if (text.StartsWith("pf:", StringComparison.Ordinal)) return RefugeControlKind.PingFinish;
+        }
+        return null;
+    }
+
+    // ping ps か、ps を伴わない 2 つ目の thread が来たら、避難所がつなぎ直したものとして持ち直す。_lock を取って呼ぶ
+    private void StoreRefugeControlMessage(RefugeControlKind kind, byte[] message)
+    {
+        if (kind == RefugeControlKind.PingStart ||
+            (kind == RefugeControlKind.Thread && _refugeControlMessages.Count > 0 &&
+             GetStoredKind(_refugeControlMessages[^1]) != RefugeControlKind.PingStart))
+            _refugeControlMessages.Clear();
+        else if (kind == RefugeControlKind.PingFinish &&
+                 (_refugeControlMessages.Count == 0 ||
+                  GetStoredKind(_refugeControlMessages[^1]) == RefugeControlKind.PingFinish))
+            return;
+        _refugeControlMessages.Add(message);
+    }
+
+    private static RefugeControlKind? GetStoredKind(byte[] message)
+    {
+        using var doc = JsonDocument.Parse(message);
+        return GetRefugeControlKind(doc.RootElement);
     }
 
     private void WriteItem(Utf8JsonWriter writer, string source, UpstreamChannelBase from, JsonElement item)
