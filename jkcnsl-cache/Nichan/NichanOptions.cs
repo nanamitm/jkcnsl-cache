@@ -21,6 +21,7 @@ public sealed class NichanOptions
     public int HistoryLimit { get; init; }
     public TimeSpan HistoryDuration { get; init; }
     public TimeSpan BlockedWait { get; init; }
+    public bool BackgroundMomentum { get; init; }
 
     public static NichanOptions FromConfiguration(IConfiguration config)
     {
@@ -44,6 +45,7 @@ public sealed class NichanOptions
             HistoryLimit = Math.Max(0, s.GetValue("HistoryLimit", 20)),
             HistoryDuration = TimeSpan.FromSeconds(Math.Max(0, s.GetValue("HistorySeconds", 30))),
             BlockedWait = TimeSpan.FromMinutes(Math.Max(10, s.GetValue("BlockedWaitMinutes", 60))),
+            BackgroundMomentum = s.GetValue("BackgroundMomentum", true),
         };
     }
 }

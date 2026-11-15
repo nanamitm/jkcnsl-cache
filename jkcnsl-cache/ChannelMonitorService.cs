@@ -126,6 +126,7 @@ public class ChannelMonitorService : IHostedService
 
     // 5ch（"5ch:"）はポーリング型でアクセスが視聴者数に依存しないため常時監視せず、
     // コメントクライアントが接続している間だけ取得する。
+    // （受信者がいないときの勢いは NichanMomentumService が subject.txt だけを取得して出す）
     private static bool IsMonitorTarget(IConfigurationSection ch) =>
         (ch.Key.StartsWith("jk", StringComparison.Ordinal) ||
          ch.Key.StartsWith("co", StringComparison.Ordinal)) &&

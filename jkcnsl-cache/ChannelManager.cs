@@ -22,6 +22,7 @@ public class ChannelManager
     private readonly NichanHttpClient _nichanHttp;
     private readonly NichanBoardService _nichanBoards;
     private readonly NichanBoardCatalog _nichanCatalog;
+    private readonly NichanMomentumService _nichanMomentum;
     private readonly ProgramInfoService _programInfo;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
     // upstreamValue -> それを共有するチャンネルキー群（エイリアス集計用）。
@@ -47,8 +48,9 @@ public class ChannelManager
         NicovideoSearchService searchService, LocalStreamConnectionLimiter localStreamLimiter,
         ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage,
         NichanHttpClient nichanHttp, NichanBoardService nichanBoards, NichanBoardCatalog nichanCatalog,
-        ProgramInfoService programInfo)
+        ProgramInfoService programInfo, NichanMomentumService nichanMomentum)
     {
+        _nichanMomentum = nichanMomentum;
         _programInfo = programInfo;
         _nichanHttp = nichanHttp;
         _nichanBoards = nichanBoards;
@@ -351,19 +353,28 @@ public class ChannelManager
             _ => "-"
         };
         if (!_channels.TryGetValue(canonical, out var ch))
-            return (false, type, null, 0, 0, 0, 0);
+            return (false, type, null, GetForce(canonical, upstreamValue, null), 0, 0, 0);
         var viewers = GetViewerCount(canonical, upstreamValue, ch);
-        return (ch.IsRunning, type, ch.CurrentTarget, ch.Force, viewers, ch.TotalComments, ch.LastResNo);
+        return (ch.IsRunning, type, ch.CurrentTarget, GetForce(canonical, upstreamValue, ch), viewers, ch.TotalComments, ch.LastResNo);
     }
 
     public (int Force, int Viewers, long TotalComments, long LastResNo) GetChannelStats(string channel)
     {
         var canonical = ResolveChannel(channel) ?? channel;
-        if (!_channels.TryGetValue(canonical, out var ch))
-            return (0, 0, 0, 0);
         var upstreamValue = _config[$"CacheServer:Channels:{canonical}"];
+        if (!_channels.TryGetValue(canonical, out var ch))
+            return (GetForce(canonical, upstreamValue, null), 0, 0, 0);
         var viewers = GetViewerCount(canonical, upstreamValue, ch);
-        return (ch.Force, viewers, ch.TotalComments, ch.LastResNo);
+        return (GetForce(canonical, upstreamValue, ch), viewers, ch.TotalComments, ch.LastResNo);
+    }
+
+    // 勢い（直近 1 分のコメント数）。5ch ソースはコメント受信者がいる間しか dat を取得しないので、
+    // 受信者がいないときは subject.txt のレス数の増え方から求めた値（NichanMomentumService）を返す。
+    private int GetForce(string canonical, string? upstreamValue, UpstreamChannelBase? channel)
+    {
+        if (IsNichanValue(upstreamValue) && (channel == null || channel.ClientCount == 0))
+            return _nichanMomentum.GetForce(canonical);
+        return channel?.Force ?? 0;
     }
 
     private int GetViewerCount(string canonical, string? upstreamValue, UpstreamChannelBase channel)
@@ -499,8 +510,9 @@ public class ChannelManager
             .OrderBy(section => order.TryGetValue(section.Key, out var index) ? index : int.MaxValue)
             .ThenBy(section => section.Key, StringComparer.Ordinal)
             .Select(section => _channels.TryGetValue(section.Key, out var ch) && ch is NichanUpstreamChannel nichan
-                ? nichan.GetStatusSnapshot(ch.ClientCount)
-                : new NichanChannelStatusDto(section.Key, "idle", null, false, 0, 0, 0, 0, []))
+                ? nichan.GetStatusSnapshot(ch.ClientCount) with { Force = GetForce(section.Key, section.Value, ch) }
+                : new NichanChannelStatusDto(section.Key, "idle", null, false, 0, 0,
+                    GetForce(section.Key, section.Value, null), 0, []))
             .ToArray();
         return new NichanStatusPayload(
             options.Enabled,
@@ -512,6 +524,7 @@ public class ChannelManager
                 playbackDelaySec = (int)options.PlaybackDelay.TotalSeconds,
                 hostMinIntervalMs = (int)options.HostMinInterval.TotalMilliseconds,
                 storeComments = options.StoreComments,
+                backgroundMomentum = options.BackgroundMomentum,
             },
             totals, series, hosts, _nichanBoards.GetBoardStatuses(), channels);
     }

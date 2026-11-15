@@ -1067,7 +1067,12 @@ function renderChannelList(force = false) {
         appendChannelNameAndProgram(groupName, ch)
         const toggle = document.createElement('span')
         toggle.className = 'ch-group-toggle' + (collapsed ? ' collapsed' : '')
-        group.append(groupDot, groupName, toggle)
+        // 配下の全ソースの勢いの合計（たたんだままでも局ごとの勢いがわかるように）
+        const groupForce = document.createElement('span')
+        groupForce.className = 'force'
+        groupForce.dataset.role = 'group-force'
+        groupForce.textContent = ch.force > 0 ? String(ch.force) : ''
+        group.append(groupDot, groupName, groupForce, toggle)
         group.addEventListener('click', () => {
           if (collapsedChannels.has(ch.video)) collapsedChannels.delete(ch.video)
           else collapsedChannels.add(ch.video)
@@ -1174,6 +1179,9 @@ function updateGroupListItem(el: HTMLElement, channel: ChannelInfo) {
   const nameWrap = el.querySelector<HTMLElement>('.ch-group-name')
   if (nameWrap)
     setProgramTitle(nameWrap, channel.program ?? null)
+  const force = el.querySelector<HTMLElement>('[data-role="group-force"]')
+  if (force)
+    force.textContent = channel.force > 0 ? String(channel.force) : ''
 }
 
 function updateSourceListItem(el: HTMLElement, source: ChannelSource, program: ProgramInfo | null) {
