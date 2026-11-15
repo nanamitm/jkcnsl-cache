@@ -194,11 +194,37 @@ public abstract class UpstreamChannelBase
     private readonly TimeSpan _commentIdleTimeout;
     protected virtual TimeSpan CommentIdleTimeout => _commentIdleTimeout;
 
+    // コメントクライアントの接続直後に送るメッセージ（直近コメントの履歴など）
+    protected virtual IReadOnlyList<ReadOnlyMemory<byte>> GetInitialMessages() => [];
+
     public virtual async Task AddClientAndWaitAsync(WebSocket ws, CancellationToken ct)
     {
         var id = Guid.NewGuid();
+        var sendLock = new SemaphoreSlim(1, 1);
+        _clientSendLocks[id] = sendLock;
         _clients[id] = ws;
-        _clientSendLocks[id] = new SemaphoreSlim(1, 1);
+
+        // 接続直後に送る履歴など（ブロードキャストと混ざらないよう送信ロックを取って送る）
+        var initialMessages = GetInitialMessages();
+        if (initialMessages.Count > 0)
+        {
+            await sendLock.WaitAsync(ct);
+            try
+            {
+                foreach (var message in initialMessages)
+                    await ws.SendAsync(message, WebSocketMessageType.Text, true, ct);
+            }
+            catch (Exception ex) when (ex is WebSocketException or OperationCanceledException or InvalidOperationException)
+            {
+                _clients.TryRemove(id, out _);
+                _clientSendLocks.TryRemove(id, out _);
+                return;
+            }
+            finally
+            {
+                sendLock.Release();
+            }
+        }
 
         var buf = new byte[256];
         var idleTimeout = CommentIdleTimeout;
@@ -351,8 +377,9 @@ public abstract class UpstreamChannelBase
         return userId.All(c => char.IsAsciiLetterOrDigit(c) || c == '-' || c == '_') ? userId : "";
     }
 
+    // jk104r（避難所・ローカル）/ jk104n（5ch）→ jk104
     protected static string NormalizeJkThreadId(string channel) =>
-        channel.EndsWith("r", StringComparison.Ordinal) &&
+        (channel.EndsWith('r') || channel.EndsWith('n')) &&
         channel.Length > 2 &&
         channel[0] == 'j' &&
         channel[1] == 'k' &&

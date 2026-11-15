@@ -15,7 +15,7 @@ export interface ChannelInfo {
 
 export interface ChannelSource {
   key: string
-  sourceType: 'official' | 'unofficial' | 'refuge' | 'local' | 'unknown'
+  sourceType: 'official' | 'unofficial' | 'refuge' | 'local' | 'nichan' | 'unknown'
   label: string
   configured: boolean
   running: boolean

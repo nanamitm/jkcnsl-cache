@@ -1070,7 +1070,8 @@ function renderChannelList(force = false) {
         })
         chListEl.appendChild(group)
         if (!collapsed) {
-          for (const source of sources)
+          // 5ch は任意の追加ソースなので、未設定なら空き行を出さない
+          for (const source of sources.filter(s => s.configured || s.sourceType !== 'nichan'))
             chListEl.appendChild(createSourceListItem(source, 'ch-sub grouped', ch.video))
         }
       } else {
@@ -1176,6 +1177,7 @@ function updateSourceListItem(el: HTMLElement, source: ChannelSource, program: P
   el.classList.toggle('unofficial-source', source.sourceType === 'unofficial')
   el.classList.toggle('refuge-source', source.sourceType === 'refuge')
   el.classList.toggle('local-source', source.sourceType === 'local')
+  el.classList.toggle('nichan-source', source.sourceType === 'nichan')
 
   const dot = el.querySelector<HTMLElement>('[data-role="dot"]')
   if (dot) {
@@ -1537,6 +1539,10 @@ function createSourceListItem(source: ChannelSource, className: string, channelV
 
 function appendSourceTarget(target: HTMLElement, source: ChannelSource, prefixSpace = false) {
   if (!source.configured) return
+  if (source.sourceType === 'nichan') {
+    appendNichanTarget(target, source, prefixSpace)
+    return
+  }
   if (source.status === 'fallbackLocal') {
     const scheduled = source.isReserved && source.scheduledStartUtc
       ? ` ${formatJst(source.scheduledStartUtc)} 予定`
@@ -1562,6 +1568,26 @@ function appendSourceTarget(target: HTMLElement, source: ChannelSource, prefixSp
       target.append(formatRefugeTarget(source.currentTarget))
     else
       target.append(source.currentTarget)
+  }
+}
+
+// 5ch: 追跡中のスレタイ（statusText の先頭）を、そのスレへのリンクとして表示する。
+// 書き込みはサーバー経由ではできないため、スレを開いて書き込んでもらう。
+function appendNichanTarget(target: HTMLElement, source: ChannelSource, prefixSpace: boolean) {
+  if (!source.running) return
+  if (prefixSpace) target.append(' ')
+  const firstThread = source.statusText?.split(' / ')[0] ?? ''
+  if (source.status === 'running' && source.currentTarget && /^https:\/\//.test(source.currentTarget)) {
+    const link = document.createElement('a')
+    link.href = source.currentTarget
+    link.target = '_blank'
+    link.rel = 'noreferrer'
+    link.textContent = firstThread || 'スレを開く'
+    link.title = source.statusText ?? ''
+    link.addEventListener('click', e => e.stopPropagation())
+    target.appendChild(link)
+  } else if (source.statusText) {
+    target.append(source.statusText)
   }
 }
 
@@ -1609,6 +1635,7 @@ function sourceClass(source: ChannelSource) {
   if (source.sourceType === 'unofficial') return 'unofficial-source'
   if (source.sourceType === 'refuge') return 'refuge-source'
   if (source.sourceType === 'local') return 'local-source'
+  if (source.sourceType === 'nichan') return 'nichan-source'
   return ''
 }
 
@@ -2215,6 +2242,7 @@ function updateStageInfo() {
   const typeStr   = source?.label ?? '-'
   const typeClass = source?.sourceType === 'official' ? 'si-official'
     : source?.sourceType === 'refuge' || source?.sourceType === 'local' ? 'si-refuge'
+    : source?.sourceType === 'nichan' ? 'si-nichan'
     : source?.sourceType === 'unofficial' ? 'si-unofficial' : 'si-unofficial'
   const typeBadge = ch ? `<span class="si-badge ${typeClass}">${typeStr}</span>` : ''
   const nameHtml  = `<div class="si-name">${typeBadge}${ch?.name ?? selectedChannel}</div>`

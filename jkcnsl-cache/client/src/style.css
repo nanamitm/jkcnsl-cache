@@ -1054,6 +1054,7 @@ body {
 .si-official   { color: var(--accent); }
 .si-unofficial { color: #ce93d8; }
 .si-refuge     { color: #80cbc4; }
+.si-nichan     { color: #ce93d8; }
 .si-status { font-size: 13px; }
 .si-connecting  { color: var(--text-muted); }
 .si-disconnected { color: #ef5350; }
@@ -1427,6 +1428,7 @@ body {
 .official-source .ch-sub-target { color: var(--accent); }
 .refuge-source .ch-sub-target { color: #80cbc4; }
 .local-source .ch-sub-target { color: #b6e388; }
+.nichan-source .ch-sub-target { color: #ce93d8; }
 .ch-sub-target a { color: inherit; text-decoration: none; }
 .ch-sub-target a:hover { text-decoration: underline; }
 

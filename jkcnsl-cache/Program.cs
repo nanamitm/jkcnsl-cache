@@ -23,6 +23,9 @@ builder.Services.AddSingleton<MetricsService>();
 builder.Services.AddSingleton<EpgStorageService>();
 builder.Services.AddSingleton<ProgramInfoService>();
 builder.Services.AddSingleton<CommentStorageService>();
+builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanHttpClient>();
+builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanBoardService>();
+builder.Services.AddSingleton<jkcnsl_cache.Nichan.NichanBoardCatalog>();
 builder.Services.AddResponseCompression(o => o.EnableForHttps = true);
 builder.Services.AddHostedService<ChannelMonitorService>();
 builder.Services.AddHostedService<ChannelsStatsBroadcastService>();
@@ -239,6 +242,7 @@ app.MapGet("/api/status", (ChannelManager mgr, ChannelCatalog channelCatalog) =>
             ChannelsStreamPayloads.CreateSourceStatus(mgr, info.Video, "official"),
             ChannelsStreamPayloads.CreateSourceStatus(mgr, coChannel, "unofficial"),
             ChannelsStreamPayloads.CreateSourceStatus(mgr, info.Video + "r", "refuge"),
+            ChannelsStreamPayloads.CreateSourceStatus(mgr, info.Video + "n", "nichan"),
         };
 
         return new
