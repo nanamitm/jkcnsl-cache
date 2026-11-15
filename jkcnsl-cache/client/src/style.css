@@ -491,6 +491,48 @@ body {
 }
 #comment-panel[hidden] { display: none; }
 
+/* 5ch ソースのスレ絞り込み */
+#nichan-threads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  max-height: 52px;
+  overflow-y: auto;
+}
+#nichan-threads[hidden] { display: none; }
+.nichan-thread {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  cursor: pointer;
+}
+.nichan-thread input { margin: 0; flex-shrink: 0; }
+.nichan-thread-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 22em;
+}
+.nichan-thread:has(input:not(:checked)) .nichan-thread-title { text-decoration: line-through; opacity: .6; }
+.nichan-thread.finished .nichan-thread-title { opacity: .6; }
+.nichan-thread-tag {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 10px;
+}
+.nichan-thread-link { flex-shrink: 0; color: var(--text-faint); text-decoration: none; }
+.nichan-thread-link:hover { color: var(--accent); }
+.log-entry[hidden] { display: none; }
+
 /* ── Schedule ───────────────────────────── */
 #schedule-view {
   flex: 1;

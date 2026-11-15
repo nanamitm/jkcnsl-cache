@@ -37,6 +37,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
     private ProgramKeys _currentProgram = ProgramKeys.Empty;
     private ProgramKeys _previousProgram = ProgramKeys.Empty;
     private DateTimeOffset _previousProgramUntil = DateTimeOffset.MinValue;
+    // クライアントへ知らせる追跡中スレの一覧（{"nichan_threads":...}）。変わったときだけ配信する
+    private byte[]? _threadsMessage;
 
     public override string Status { get { lock (_lock) return IsRunning ? _status : "idle"; } }
     public override string? StatusText { get { lock (_lock) return _statusText; } }
@@ -109,7 +111,11 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         lock (_lock)
         {
             TrimHistory(DateTimeOffset.UtcNow);
-            return _history.Select(h => (ReadOnlyMemory<byte>)h.Message).ToArray();
+            var messages = new List<ReadOnlyMemory<byte>>(_history.Count + 1);
+            if (_threadsMessage != null)
+                messages.Add(_threadsMessage);
+            messages.AddRange(_history.Select(h => (ReadOnlyMemory<byte>)h.Message));
+            return messages;
         }
     }
 
@@ -145,6 +151,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
             {
                 _pending.Clear();
                 _threads.Clear();
+                _threadsMessage = null;
             }
         }
     }
@@ -200,6 +207,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     var backlogFrom = (lastSelectAt ?? now) - _options.InitialBacklog;
                     ApplySelection(selected, backlogFrom);
                     lastSelectAt = now;
+                    // さかのぼって流すレスより先にスレ一覧が届くよう、選択直後にも送る
+                    await PublishThreadListAsync();
                 }
                 catch (NichanHostBlockedException ex)
                 {
@@ -228,6 +237,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     _threads.Remove(key);
             }
             UpdateRunningStatus();
+            await PublishThreadListAsync();
 
             await Task.Delay(_options.DatInterval, ct);
         }
@@ -282,10 +292,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 var title = NormalizeTitle(thread.Title);
                 if (keywords.Length > 0 && !keywords.Any(title.Contains)) continue;
                 if (excludes.Any(title.Contains)) continue;
-                var compact = NichanProgramMatcher.Compact(thread.Title);
-                var programMatch = entry.ProgramOnly
-                    ? NichanProgramMatcher.Matches(compact, programOnlyKeys)
-                    : programKeys.Length > 0 && NichanProgramMatcher.Matches(compact, programKeys);
+                var programMatch = NichanProgramMatcher.MatchesThread(thread.Title,
+                    entry.ProgramOnly ? programOnlyKeys : programKeys);
                 if (entry.ProgramOnly && !programMatch) continue;
                 // 勢い（1 時間あたりのレス数）。立ったばかりのスレが過大にならないよう経過時間に下限を置く
                 var ageHours = thread.Address.CreatedAt is { } created
@@ -454,7 +462,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 var due = postedAt + _options.PlaybackDelay;
                 if (due > now + _options.PlaybackDelay)
                     due = now + _options.PlaybackDelay;
-                _pending.Enqueue(new PendingRes(postedAt, userId, text), (due, ++_pendingSeq));
+                _pending.Enqueue(new PendingRes(postedAt, userId, text, state.Loader.Address.Identity, res.Number),
+                    (due, ++_pendingSeq));
                 added++;
             }
         }
@@ -517,10 +526,58 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
             writer.WriteNumber("premium", 0);
             writer.WriteNumber("anonymity", 1);
             writer.WriteString("content", res.Text);
+            // どのスレのレスか（クライアントのスレ絞り込み用。避難所互換クライアントは無視する）
+            writer.WriteString("nichan_thread", res.ThreadId);
+            writer.WriteNumber("nichan_res", res.ResNo);
             writer.WriteEndObject();
             writer.WriteEndObject();
         }
         return ms.ToArray();
+    }
+
+    // 追跡中のスレ一覧を {"nichan_threads":{...}} として、内容が変わったときだけ全クライアントへ送る。
+    // レス数は頻繁に変わるので含めない（スレの入れ替え・スレタイ・番組一致・終了の変化だけで送る）。
+    private async Task PublishThreadListAsync()
+    {
+        byte[] message;
+        lock (_lock)
+        {
+            using var ms = new MemoryStream();
+            using (var writer = new Utf8JsonWriter(ms))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("nichan_threads");
+                writer.WriteStartObject();
+                writer.WriteString("thread", GetDownstreamThreadId(_channel));
+                if (_fixedThread == null && _programTitle != null)
+                    writer.WriteString("program", _programTitle);
+                else
+                    writer.WriteNull("program");
+                writer.WritePropertyName("threads");
+                writer.WriteStartArray();
+                foreach (var t in _threads.Values
+                             .Where(t => !t.Dropping)
+                             .OrderByDescending(t => t.ProgramMatch)
+                             .ThenByDescending(t => t.Loader.Address.Key, StringComparer.Ordinal))
+                {
+                    writer.WriteStartObject();
+                    writer.WriteString("id", t.Loader.Address.Identity);
+                    writer.WriteString("title", string.IsNullOrEmpty(t.Title) ? t.Loader.Address.Key : t.Title);
+                    writer.WriteString("url", t.Loader.Address.ThreadUri.ToString());
+                    writer.WriteBoolean("programMatch", t.ProgramMatch);
+                    writer.WriteBoolean("finished", t.Finished);
+                    writer.WriteEndObject();
+                }
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+                writer.WriteEndObject();
+            }
+            message = ms.ToArray();
+            if (_threadsMessage != null && _threadsMessage.AsSpan().SequenceEqual(message))
+                return;
+            _threadsMessage = message;
+        }
+        await BroadcastAsync(message);
     }
 
     private void TrimHistory(DateTimeOffset now)
@@ -570,7 +627,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         public static readonly ProgramKeys Empty = new([], false);
     }
 
-    private sealed record PendingRes(DateTimeOffset PostedAt, string UserId, string Text);
+    private sealed record PendingRes(DateTimeOffset PostedAt, string UserId, string Text, string ThreadId, int ResNo);
 
     private sealed class ThreadState
     {

@@ -4,6 +4,7 @@ import type {
   ChannelInfo,
   ChannelSource,
   Chat,
+  NichanThreadsMessage,
   ChannelsStreamMessage,
   ProgramInfo,
   ScheduleResponse,
@@ -84,6 +85,9 @@ let scheduleDrag: {
   scrollTop: number
 } | null = null
 let commentLogQueue: Chat[] = []
+// 5ch ソースのスレ絞り込み（表示しないスレの id）。スレは入れ替わるので保存しない
+let nichanThreads: NichanThreadsMessage | null = null
+const nichanHiddenThreads = new Set<string>()
 let commentLogFlushScheduled = false
 const COMMENT_LOG_MAX_ITEMS = 100
 const COMMENT_LOG_FLUSH_LIMIT = 24
@@ -485,6 +489,7 @@ app.innerHTML = `
       </div>
     </section>
     <div id="comment-panel">
+      <div id="nichan-threads" hidden></div>
       <div id="comment-list-wrap"><ul id="comment-list"></ul></div>
       <div id="post-area" hidden>
         <button id="cmd-toggle" title="コマンドを選択" type="button">▼</button>
@@ -530,6 +535,7 @@ const programBanner = document.getElementById('program-banner')!
 const stageInfo   = document.getElementById('stage-info')!
 const connectionActionBtn = document.getElementById('connection-action-btn') as HTMLButtonElement
 const commentList = document.getElementById('comment-list')!
+const nichanThreadsEl = document.getElementById('nichan-threads') as HTMLElement
 const statusBar   = document.getElementById('status-bar')!
 const settingsBtn = document.getElementById('settings-btn')!
 const settingsPanel = document.getElementById('settings-panel') as HTMLElement
@@ -1690,6 +1696,7 @@ function selectChannel(video: string) {
   commentLogQueue = []
   commentLogFlushScheduled = false
   commentList.innerHTML = ''
+  resetNichanThreads()
   ws?.close()
   watchWs?.close()
   watchWs = null
@@ -1736,6 +1743,7 @@ function connectWs(video: string) {
     try {
       const obj = JSON.parse(e.data)
       if (obj.chat) handleChat(obj.chat as Chat)
+      else if (obj.nichan_threads) handleNichanThreads(obj.nichan_threads as NichanThreadsMessage)
     } catch { /* ignore */ }
   }
   ws.onclose = (e) => {
@@ -1855,6 +1863,7 @@ function startWatchKeepSeat(keepIntervalSec: unknown) {
 // ─── Comments ─────────────────────────────────────────────────────────────────
 function handleChat(chat: Chat) {
   if (ngSet.has(chat.user_id)) return
+  if (chat.nichan_thread && nichanHiddenThreads.has(chat.nichan_thread)) return
   const postedAt = pendingOwnTexts.get(chat.content)
   const isOwn = postedAt !== undefined && Date.now() - postedAt < 15000
   if (isOwn) pendingOwnTexts.delete(chat.content)
@@ -1899,6 +1908,7 @@ function createCommentLogEntry(chat: Chat) {
   const li = document.createElement('li')
   li.className = 'log-entry'
   li.dataset.uid = chat.user_id
+  if (chat.nichan_thread) li.dataset.nthread = chat.nichan_thread
   const time = new Date(chat.date * 1000).toLocaleTimeString('ja-JP',
     { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   const timeEl = document.createElement('span')
@@ -1914,6 +1924,72 @@ function createCommentLogEntry(chat: Chat) {
   ngBtn.addEventListener('click', (e) => { e.stopPropagation(); addNg(chat.user_id) })
   li.append(timeEl, textEl, ngBtn)
   return li
+}
+
+// ─── 5ch thread filter ────────────────────────────────────────────────────────
+function resetNichanThreads() {
+  nichanThreads = null
+  nichanHiddenThreads.clear()
+  renderNichanThreads()
+}
+
+function handleNichanThreads(message: NichanThreadsMessage) {
+  nichanThreads = message
+  // 一覧から消えたスレの非表示指定は捨てる（同じ id のスレが再び選ばれたら表示に戻る）
+  const ids = new Set(message.threads.map(t => t.id))
+  for (const id of [...nichanHiddenThreads])
+    if (!ids.has(id)) nichanHiddenThreads.delete(id)
+  renderNichanThreads()
+  applyNichanFilterToLog()
+}
+
+function renderNichanThreads() {
+  nichanThreadsEl.innerHTML = ''
+  const threads = nichanThreads?.threads ?? []
+  // スレが 1 つ以下なら絞り込む意味がないので出さない
+  nichanThreadsEl.hidden = threads.length < 2
+  if (nichanThreadsEl.hidden) return
+  for (const thread of threads) {
+    const label = document.createElement('label')
+    label.className = 'nichan-thread'
+    if (thread.finished) label.classList.add('finished')
+    label.title = thread.title + (thread.programMatch ? '（番組名に一致）' : '') + (thread.finished ? '（終了）' : '')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = !nichanHiddenThreads.has(thread.id)
+    check.addEventListener('change', () => {
+      if (check.checked) nichanHiddenThreads.delete(thread.id)
+      else nichanHiddenThreads.add(thread.id)
+      applyNichanFilterToLog()
+    })
+    label.append(check)
+    if (thread.programMatch) {
+      const tag = document.createElement('span')
+      tag.className = 'nichan-thread-tag'
+      tag.textContent = '番組'
+      label.append(tag)
+    }
+    const title = document.createElement('span')
+    title.className = 'nichan-thread-title'
+    title.textContent = thread.title
+    const link = document.createElement('a')
+    link.className = 'nichan-thread-link'
+    link.href = thread.url
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    link.textContent = '↗'
+    link.title = 'スレを開く'
+    label.append(title, link)
+    nichanThreadsEl.append(label)
+  }
+}
+
+// 表示済みのコメントログにも絞り込みを反映する（流れているコメントはそのまま）
+function applyNichanFilterToLog() {
+  for (const li of commentList.children as HTMLCollectionOf<HTMLElement>) {
+    const id = li.dataset.nthread
+    li.hidden = id !== undefined && nichanHiddenThreads.has(id)
+  }
 }
 
 // ─── Post comment ───────────────────────────────────────────────────────────

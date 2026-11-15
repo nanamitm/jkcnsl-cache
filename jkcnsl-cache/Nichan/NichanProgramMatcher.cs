@@ -58,15 +58,52 @@ public static partial class NichanProgramMatcher
     public static bool Matches(string compactThreadTitle, IReadOnlyList<string> keys) =>
         keys.Any(key => compactThreadTitle.Contains(key, StringComparison.Ordinal));
 
+    // スレタイが番組名に一致するか。キーがスレタイに含まれるか、逆にスレタイの先頭の語でキーが始まれば一致とする。
+    // 後者は、番組表で番組名と副題が区切りなしにつながっている場合のため:
+    //   番組名 "メシドラディーン・フジオカが育った…" / スレタイ "メシドラ　 ゲスト：ディーン・フジオカ"
+    public static bool MatchesThread(string threadTitle, IReadOnlyList<string> keys)
+    {
+        if (keys.Count == 0)
+            return false;
+        if (Matches(Compact(threadTitle), keys))
+            return true;
+        var lead = ThreadLeadKey(threadTitle);
+        if (lead == null)
+            return false;
+        // 番組名の途中に含まれる場合（番組名 "開運!なんでも鑑定団" / スレタイ "なんでも鑑定団"）は、
+        // 誤一致を避けるため全角を含む 5 文字以上の語に限る
+        var allowContains = lead.Length >= 5 && !lead.All(char.IsAscii);
+        return keys.Any(key => allowContains
+            ? key.Contains(lead, StringComparison.Ordinal)
+            : key.StartsWith(lead, StringComparison.Ordinal));
+    }
+
+    // スレタイの先頭の語（括弧書き・スレ番号・副題を落としたもの）。短すぎる・一般的すぎる語なら null
+    public static string? ThreadLeadKey(string threadTitle)
+    {
+        var t = threadTitle.Normalize(NormalizationForm.FormKC).ToLower(CultureInfo.InvariantCulture);
+        t = BracketRegex().Replace(t, " ");
+        t = EpisodeSplitRegex().Split(t)[0];
+        var first = WordSplitRegex().Split(t.Trim()).FirstOrDefault(s => s.Length > 0);
+        if (first == null)
+            return null;
+        var key = Compact(first);
+        return IsUsableKey(key) ? key : null;
+    }
+
     private static void AddKey(List<string> keys, string raw)
     {
         var key = Compact(raw);
+        if (IsUsableKey(key) && !keys.Contains(key))
+            keys.Add(key);
+    }
+
+    private static bool IsUsableKey(string key)
+    {
         // 全角を含まないキーは短いと誤一致しやすいので長めを要求する
         var minLength = key.All(char.IsAscii) ? 4 : 3;
-        if (key.Length < minLength || GenericKeys.Contains(key) || key.Contains("ショッピング", StringComparison.Ordinal))
-            return;
-        if (!keys.Contains(key))
-            keys.Add(key);
+        return key.Length >= minLength && !GenericKeys.Contains(key) &&
+               !key.Contains("ショッピング", StringComparison.Ordinal);
     }
 
     [GeneratedRegex(@"\[[^\]]*\]|【[^】]*】|<[^>]*>|〈[^〉]*〉|《[^》]*》|\([^)]*\)")]

@@ -261,6 +261,23 @@ DBに保存されているEPGデータの放送日範囲を返します。クラ
 
 `nichan` ソースは常に `commentable=false` です。投稿すると `{"type":"error","data":{"code":"NOT_SUPPORTED"}}` を返します。5ch に書き込みたい場合は `currentTarget` のスレを開いてもらってください。
 
+### 5ch ソースの追加フィールドとスレ一覧
+
+`nichan` ソースの `chat` には、どのスレのレスかを示すフィールドが付きます（避難所互換のクライアントは無視して構いません）。
+
+- `nichan_thread`: スレの識別子（`sora.5ch.io/liventv/1794716909` の形。下記 `threads[].id` と同じ）
+- `nichan_res`: スレ内のレス番号
+
+また、追跡中のスレ一覧が `chat` とは別のメッセージで届きます。接続直後（履歴より先）と、スレの入れ替え・スレタイ・番組一致・終了が変わったときに送られます（レス数の変化だけでは送りません）。
+
+```json
+{"nichan_threads":{"thread":"jk4","program":"番組名 または null","threads":[
+  {"id":"sora.5ch.io/liventv/1794716909","title":"スレタイ","url":"https://sora.5ch.io/test/read.cgi/liventv/1794716909/","programMatch":true,"finished":false}
+]}}
+```
+
+クライアントはこれを使って、スレごとに表示・非表示を切り替えられます（Webクライアントはコメント欄の上にスレのチェックボックスを出します）。サーバーの取得対象は変わらないため、絞り込みで 5ch へのリクエストは増減しません。
+
 ## スレッドID
 
 サーバーは下流向けの thread ID を代表チャンネルIDへ正規化します。たとえば内部ソースキーが `jk104r` や `jk104n` の場合でも、そのソース経由で接続したクライアントは `thread_id="jk104"` を受け取り、コメントは `thread="jk104"` または `thread="jk104_..."` になります。

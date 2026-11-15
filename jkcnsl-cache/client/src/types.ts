@@ -133,4 +133,21 @@ export interface Chat {
   anonymity: number
   content: string
   mail?: string        // "red ue big" など
+  nichan_thread?: string  // 5ch ソースのとき、レスのスレ（NichanThreadEntry.id）
+  nichan_res?: number     // 5ch ソースのとき、スレ内のレス番号
+}
+
+// 5ch ソースで追跡中のスレ一覧（{"nichan_threads":{...}}）
+export interface NichanThreadEntry {
+  id: string
+  title: string
+  url: string
+  programMatch: boolean
+  finished: boolean
+}
+
+export interface NichanThreadsMessage {
+  thread: string
+  program: string | null
+  threads: NichanThreadEntry[]
 }
