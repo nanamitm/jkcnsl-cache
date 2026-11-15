@@ -2,7 +2,10 @@ namespace jkcnsl_cache.Nichan;
 
 // 板 1 つ分の割り当て。Keywords が空なら板の全スレが対象。
 // Excludes はキーワードに一致しても除外する語（"NHK BS" と "NHK BSプレミアム4K" の区別など）。
-public sealed record NichanBoardEntry(Uri Board, IReadOnlyList<string> Keywords, IReadOnlyList<string> Excludes);
+// ProgramOnly の板（アニメ実況板など）は、番組表の番組名に一致するスレだけを対象にし、
+// 番組がアニメ（ジャンル不明を含む）のときだけ見る。
+public sealed record NichanBoardEntry(Uri Board, IReadOnlyList<string> Keywords, IReadOnlyList<string> Excludes,
+    bool ProgramOnly = false);
 
 // jk ID → 5ch 実況板・スレタイキーワードの対応表。
 // 既定値は TVTComment（noriokun4649/TVTComment, MIT）の Data/2chthreads.txt を元に、
@@ -54,7 +57,10 @@ public sealed class NichanBoardCatalog
 
     public NichanBoardCatalog(IConfiguration config, ILogger<NichanBoardCatalog> logger)
     {
-        _entries = new Dictionary<string, NichanBoardEntry[]>(Defaults, StringComparer.Ordinal);
+        _entries = Defaults.ToDictionary(
+            kv => kv.Key,
+            kv => AnimeChannels.Contains(kv.Key) ? [.. kv.Value, Anime] : kv.Value,
+            StringComparer.Ordinal);
         foreach (var channel in config.GetSection("CacheServer:Nichan:Boards").GetChildren())
         {
             var list = new List<NichanBoardEntry>();
@@ -70,7 +76,8 @@ public sealed class NichanBoardCatalog
                 {
                     list.Add(new NichanBoardEntry(NichanThreadAddress.NormalizeBoard(uri),
                         ReadStrings(item.GetSection("Keywords")),
-                        ReadStrings(item.GetSection("Excludes"))));
+                        ReadStrings(item.GetSection("Excludes")),
+                        item.GetValue("ProgramOnly", false)));
                 }
                 catch (FormatException ex)
                 {
@@ -101,4 +108,14 @@ public sealed class NichanBoardCatalog
 
     private static NichanBoardEntry B(string board, string[]? keywords = null, string[]? excludes = null) =>
         new(new Uri(board), keywords ?? [], excludes ?? []);
+
+    // アニメ・特撮実況板（作品ごとにスレが立つため、番組名に一致するスレだけを対象にする）
+    private static readonly NichanBoardEntry Anime = new(new Uri("https://mao.5ch.io/liveanime/"), [], [], ProgramOnly: true);
+
+    // 既定の対応表で、アニメ実況板も見るチャンネル
+    private static readonly string[] AnimeChannels =
+    [
+        "jk1", "jk2", "jk4", "jk5", "jk6", "jk7", "jk8", "jk9", "jk10", "jk11", "jk12", "jk13", "jk14",
+        "jk101", "jk103", "jk141", "jk151", "jk161", "jk171", "jk181", "jk211", "jk222", "jk236", "jk333",
+    ];
 }

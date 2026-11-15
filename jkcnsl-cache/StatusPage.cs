@@ -416,7 +416,7 @@ internal static class StatusPage
         };
         function nichanThreadHtml(t) {
           const cls = t.finished || t.dropping ? 'thread done' : 'thread';
-          const tag = t.finished ? ' [終了]' : t.dropping ? ' [選択外]' : '';
+          const tag = (t.programMatch ? ' [番組一致]' : '') + (t.finished ? ' [終了]' : t.dropping ? ' [選択外]' : '');
           const err = t.error
             ? ` <span class="err">${esc(t.error)}${t.retryAt ? '（' + esc(fmtTime(t.retryAt)) + ' に再試行）' : ''}</span>`
             : '';
@@ -457,6 +457,9 @@ internal static class StatusPage
               const [label, cls] = nichanStatusLabel[c.status] ?? [c.status, ''];
               const threads = (c.threads ?? []).map(nichanThreadHtml).join('');
               const note = !threads && c.statusText ? `<span class="thread muted">${esc(c.statusText)}</span>` : '';
+              const program = c.running
+                ? `<span class="thread muted">番組: ${c.programTitle ? esc(c.programTitle) : '（番組表なし）'}${c.programKeys?.length ? ' ／ 照合: ' + esc(c.programKeys.join(', ')) : ''}</span>`
+                : '';
               return `<tr>
                 <td class="type-nichan">${esc(c.key)}</td>
                 <td class="${cls}">${esc(label)}</td>
@@ -464,7 +467,7 @@ internal static class StatusPage
                 <td class="n force">${num(c.force)}</td>
                 <td class="n">${num(c.delivered)}</td>
                 <td class="n">${num(c.pending)}</td>
-                <td class="wrap">${threads}${note}</td>
+                <td class="wrap">${program}${threads}${note}</td>
               </tr>`;
             }).join('') : '<tr><td colspan="7" class="muted">5ch ソースは設定されていません</td></tr>';
             document.getElementById('nichan-hosts').innerHTML = hosts.length ? hosts.map(h => {

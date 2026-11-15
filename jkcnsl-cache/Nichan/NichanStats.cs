@@ -141,11 +141,12 @@ public sealed record NichanHostDto(
 
 public sealed record NichanThreadStatusDto(
     string Title, string Url, int ResCount, bool Finished, bool Dropping, string? Error,
-    DateTimeOffset? RetryAt, DateTimeOffset? LastFetchAt, DateTimeOffset? LastNewResAt, long Queued);
+    DateTimeOffset? RetryAt, DateTimeOffset? LastFetchAt, DateTimeOffset? LastNewResAt, long Queued,
+    bool ProgramMatch);
 
 public sealed record NichanChannelStatusDto(
     string Key, string Status, string? StatusText, bool Running, int Clients, long Delivered, int Force,
-    int Pending, NichanThreadStatusDto[] Threads);
+    int Pending, NichanThreadStatusDto[] Threads, string? ProgramTitle = null, string[]? ProgramKeys = null);
 
 public sealed record NichanBoardStatusDto(string Board, string? MovedTo, int Threads, DateTimeOffset? FetchedAt);
 

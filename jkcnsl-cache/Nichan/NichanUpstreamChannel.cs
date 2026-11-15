@@ -10,11 +10,16 @@ namespace jkcnsl_cache.Nichan;
 public sealed class NichanUpstreamChannel : UpstreamChannelBase
 {
     private static readonly TimeSpan IdleAfter = TimeSpan.FromMinutes(2);
+    // 番組が切り替わった後も、前の番組のスレをこの時間は番組一致として扱う
+    private static readonly TimeSpan PreviousProgramGrace = TimeSpan.FromMinutes(5);
+    private const string AnimeGenreCode = "0x7";
 
     private readonly NichanOptions _options;
     private readonly NichanHttpClient _http;
     private readonly NichanBoardService _boards;
     private readonly NichanBoardCatalog _catalog;
+    private readonly ProgramInfoService? _programs;
+    private readonly string _programVideo;
     private readonly NichanThreadAddress? _fixedThread;
     private readonly string? _invalidTarget;
     private readonly object _lock = new();
@@ -27,6 +32,11 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
     private string _status = "idle";
     private string? _statusText;
     private string? _currentTarget;
+    // 番組表による現在の番組（スレ選択で番組名に一致するスレを優先する）
+    private string? _programTitle;
+    private ProgramKeys _currentProgram = ProgramKeys.Empty;
+    private ProgramKeys _previousProgram = ProgramKeys.Empty;
+    private DateTimeOffset _previousProgramUntil = DateTimeOffset.MinValue;
 
     public override string Status { get { lock (_lock) return IsRunning ? _status : "idle"; } }
     public override string? StatusText { get { lock (_lock) return _statusText; } }
@@ -41,14 +51,17 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
     }
 
     public NichanUpstreamChannel(string channel, string target, NichanHttpClient http,
-        NichanBoardService boards, NichanBoardCatalog catalog, IConfiguration config,
-        ILogger logger, MetricsService? metrics)
+        NichanBoardService boards, NichanBoardCatalog catalog, ProgramInfoService? programs,
+        IConfiguration config, ILogger logger, MetricsService? metrics)
         : base(channel, logger, metrics, config)
     {
         _http = http;
         _options = http.Options;
         _boards = boards;
         _catalog = catalog;
+        _programs = programs;
+        // jk104n → jk104（番組表のキー）
+        _programVideo = NormalizeJkThreadId(channel);
         // /watch の応答（vposBaseTime）が上流ループの開始より先に読まれても一致するよう、生成時に決める
         _startedAtTicks = DateTimeOffset.UtcNow.UtcTicks;
         if (!string.IsNullOrWhiteSpace(target))
@@ -81,10 +94,13 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     t.RetryAt > DateTimeOffset.UtcNow ? t.RetryAt : null,
                     t.LastFetchAt,
                     t.LastNewResAt,
-                    t.Queued))
+                    t.Queued,
+                    t.ProgramMatch))
                 .ToArray();
             return new NichanChannelStatusDto(_channel, Status, _statusText, IsRunning, clients,
-                TotalComments, Force, _pending.Count, threads);
+                TotalComments, Force, _pending.Count, threads,
+                _fixedThread == null ? _programTitle : null,
+                _fixedThread == null ? _currentProgram.Keys.ToArray() : []);
         }
     }
 
@@ -170,6 +186,10 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 continue;
             }
 
+            // 番組が切り替わったら、次のスレ一覧更新を待たずに選び直す
+            if (_fixedThread == null && RefreshProgram(now))
+                nextSelect = now;
+
             if (now >= nextSelect)
             {
                 nextSelect = now + _options.SubjectInterval;
@@ -213,21 +233,36 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         }
     }
 
-    private async Task<IReadOnlyList<NichanThreadInfo>> SelectThreadsAsync(CancellationToken ct)
+    private async Task<IReadOnlyList<SelectedThread>> SelectThreadsAsync(CancellationToken ct)
     {
         if (_fixedThread != null)
-            return [new NichanThreadInfo(_fixedThread, "", 0)];
+            return [new SelectedThread(new NichanThreadInfo(_fixedThread, "", 0), false)];
 
         var entries = _catalog.Get(_channel);
         if (entries.Count == 0)
             throw new NichanException("このチャンネルに対応する 5ch の板が設定されていません（CacheServer:Nichan:Boards）");
 
         var now = DateTimeOffset.UtcNow;
-        var candidates = new List<(NichanThreadInfo Thread, double Momentum)>();
+        ProgramKeys current, previous;
+        lock (_lock)
+        {
+            current = _currentProgram;
+            previous = now < _previousProgramUntil ? _previousProgram : ProgramKeys.Empty;
+        }
+        var programKeys = current.Keys.Concat(previous.Keys).Distinct().ToArray();
+        // アニメ実況板のような番組専用の板は、番組がアニメのとき（ジャンル不明を含む）だけ見る
+        var programOnlyKeys = current.Keys.Where(_ => current.AllowsProgramOnly)
+            .Concat(previous.Keys.Where(_ => previous.AllowsProgramOnly))
+            .Distinct()
+            .ToArray();
+
+        var candidates = new List<(NichanThreadInfo Thread, double Momentum, bool ProgramMatch)>();
         NichanException? lastError = null;
         var succeeded = 0;
         foreach (var entry in entries)
         {
+            if (entry.ProgramOnly && programOnlyKeys.Length == 0)
+                continue;
             IReadOnlyList<NichanThreadInfo> threads;
             try
             {
@@ -247,28 +282,74 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 var title = NormalizeTitle(thread.Title);
                 if (keywords.Length > 0 && !keywords.Any(title.Contains)) continue;
                 if (excludes.Any(title.Contains)) continue;
+                var compact = NichanProgramMatcher.Compact(thread.Title);
+                var programMatch = entry.ProgramOnly
+                    ? NichanProgramMatcher.Matches(compact, programOnlyKeys)
+                    : programKeys.Length > 0 && NichanProgramMatcher.Matches(compact, programKeys);
+                if (entry.ProgramOnly && !programMatch) continue;
                 // 勢い（1 時間あたりのレス数）。立ったばかりのスレが過大にならないよう経過時間に下限を置く
                 var ageHours = thread.Address.CreatedAt is { } created
                     ? Math.Max(0.1, (now - created).TotalHours)
                     : 24;
-                candidates.Add((thread, thread.ResCount / ageHours));
+                candidates.Add((thread, thread.ResCount / ageHours, programMatch));
             }
         }
         if (succeeded == 0 && lastError != null)
             throw lastError;
 
-        return candidates
-            .DistinctBy(c => c.Thread.Address.Identity)
+        var ordered = candidates
+            .GroupBy(c => c.Thread.Address.Identity)
+            .Select(g => g.OrderByDescending(c => c.ProgramMatch).First())
             .OrderByDescending(c => c.Momentum)
-            .Take(_options.MaxThreadsPerChannel)
-            .Select(c => c.Thread)
-            .ToArray();
+            .ToList();
+        // 番組名に一致するスレのうち最も勢いのあるものを必ず含め、残りは勢い順で埋める。
+        // 前の番組のスレがまだ伸びていても、始まったばかりの番組のスレを取りこぼさないため。
+        var result = new List<SelectedThread>();
+        var bestMatch = ordered.FirstOrDefault(c => c.ProgramMatch);
+        if (bestMatch.Thread != null)
+            result.Add(new SelectedThread(bestMatch.Thread, true));
+        foreach (var c in ordered)
+        {
+            if (result.Count >= _options.MaxThreadsPerChannel) break;
+            if (bestMatch.Thread != null && c.Thread.Address.Identity == bestMatch.Thread.Address.Identity) continue;
+            result.Add(new SelectedThread(c.Thread, c.ProgramMatch));
+        }
+        return result;
     }
 
-    private void ApplySelection(IReadOnlyList<NichanThreadInfo> selected, DateTimeOffset backlogFrom)
+    // 番組表から現在の番組を読み、変わっていれば true を返す
+    private bool RefreshProgram(DateTimeOffset now)
+    {
+        var program = _programs?.GetProgram(_programVideo);
+        var title = program != null && program.StartAt <= now && now < program.EndAt
+            ? program.Title
+            : null;
+        lock (_lock)
+        {
+            if (title == _programTitle)
+                return false;
+            if (_programTitle != null)
+            {
+                _previousProgram = _currentProgram;
+                _previousProgramUntil = now + PreviousProgramGrace;
+            }
+            _programTitle = title;
+            _currentProgram = new ProgramKeys(
+                NichanProgramMatcher.BuildKeys(title),
+                program?.GenreCode is null || program.GenreCode == AnimeGenreCode);
+        }
+        _logger.LogDebug("[{Channel}] 番組が変わりました: {Title} keys={Keys}",
+            _channel, title ?? "(不明)", string.Join(",", _currentProgram.Keys));
+        return true;
+    }
+
+    private void ApplySelection(IReadOnlyList<SelectedThread> selectedThreads, DateTimeOffset backlogFrom)
     {
         lock (_lock)
         {
+            var selected = selectedThreads.Select(s => s.Thread).ToArray();
+            var programMatches = selectedThreads.Where(s => s.ProgramMatch)
+                .Select(s => s.Thread.Address.Identity).ToHashSet(StringComparer.Ordinal);
             var keep = selected.Select(t => t.Address.Identity).ToHashSet(StringComparer.Ordinal);
             // 選択から外れたスレは、取りこぼしを防ぐため次の取得を 1 回済ませてから外す
             foreach (var (key, old) in _threads.Where(kv => !keep.Contains(kv.Key)).ToArray())
@@ -283,6 +364,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 if (_threads.TryGetValue(thread.Address.Identity, out var state))
                 {
                     state.Dropping = false;
+                    state.ProgramMatch = programMatches.Contains(thread.Address.Identity);
                     if (!string.IsNullOrEmpty(thread.Title))
                         state.Title = thread.Title;
                     continue;
@@ -291,6 +373,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 {
                     Title = thread.Title,
                     BacklogFrom = backlogFrom,
+                    ProgramMatch = programMatches.Contains(thread.Address.Identity),
                 };
             }
             if (_threads.Values.All(t => t.Dropping))
@@ -479,6 +562,14 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
     private static string NormalizeTitle(string title) =>
         title.Normalize(NormalizationForm.FormKC).ToLower(CultureInfo.InvariantCulture);
 
+    private sealed record SelectedThread(NichanThreadInfo Thread, bool ProgramMatch);
+
+    // 番組名から作った照合キーと、番組専用の板（アニメ実況板など）を見てよいか
+    private sealed record ProgramKeys(IReadOnlyList<string> Keys, bool AllowsProgramOnly)
+    {
+        public static readonly ProgramKeys Empty = new([], false);
+    }
+
     private sealed record PendingRes(DateTimeOffset PostedAt, string UserId, string Text);
 
     private sealed class ThreadState
@@ -494,6 +585,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         public DateTimeOffset? LastFetchAt { get; set; }
         public DateTimeOffset? LastNewResAt { get; set; }
         public long Queued { get; set; }
+        public bool ProgramMatch { get; set; }
         public string? Error { get; set; }
     }
 }

@@ -22,6 +22,7 @@ public class ChannelManager
     private readonly NichanHttpClient _nichanHttp;
     private readonly NichanBoardService _nichanBoards;
     private readonly NichanBoardCatalog _nichanCatalog;
+    private readonly ProgramInfoService _programInfo;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
     // upstreamValue -> それを共有するチャンネルキー群（エイリアス集計用）。
     // GetViewerCount 呼び出しのたびに _channels 全体を線形スキャンするのを避けるため、
@@ -45,8 +46,10 @@ public class ChannelManager
     public ChannelManager(IConfiguration config, ILogger<ChannelManager> logger, ILoggerFactory loggerFactory,
         NicovideoSearchService searchService, LocalStreamConnectionLimiter localStreamLimiter,
         ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage,
-        NichanHttpClient nichanHttp, NichanBoardService nichanBoards, NichanBoardCatalog nichanCatalog)
+        NichanHttpClient nichanHttp, NichanBoardService nichanBoards, NichanBoardCatalog nichanCatalog,
+        ProgramInfoService programInfo)
     {
+        _programInfo = programInfo;
         _nichanHttp = nichanHttp;
         _nichanBoards = nichanBoards;
         _nichanCatalog = nichanCatalog;
@@ -447,7 +450,7 @@ public class ChannelManager
             if (IsNichanValue(upstreamValue))
             {
                 ch = new NichanUpstreamChannel(channel, upstreamValue[NichanPrefix.Length..],
-                    _nichanHttp, _nichanBoards, _nichanCatalog, _config,
+                    _nichanHttp, _nichanBoards, _nichanCatalog, _programInfo, _config,
                     _loggerFactory.CreateLogger<NichanUpstreamChannel>(),
                     _metrics);
                 // 5ch のレスは既定では保存・エクスポートの対象にしない

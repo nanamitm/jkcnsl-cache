@@ -236,5 +236,10 @@ TVTComment の `DatThreadLoader` と同じ方式で取得する。
 - Webクライアントは、未設定の 5ch ソースの空き行を表示しない（既存のソース枠は従来どおり）。
 - ステータスページに「5ch」タブ（`/api/admin/nichan`）を追加した。集計は `NichanStats`（`NichanHttpClient` が記録）で、
   `MetricsService` とは独立に 5 秒枠 × 180 個を保持する。
-- 未対応: `ProgramInfoService` の番組名を使ったスレ選択、
+- 番組名を使ったスレ選択を追加した（`NichanProgramMatcher`）。`ProgramInfoService.GetProgram` の現在番組から
+  照合キーを作り、一致するスレのうち最も勢いのある 1 本を必ず選ぶ（残りは従来どおり勢い順）。番組の切り替わりで
+  即座に選び直し、前の番組のキーも 5 分間は有効。アニメ実況板（liveanime）は `ProgramOnly` の板として
+  地上波・主な BS チャンネルに割り当て、番組がアニメ（ジャンル不明を含む）のときだけ取得する。
+  ステータスページの「5ch」タブに現在の番組・照合キー・[番組一致] を表示する。
+- 未対応: 
   サーバー側での混合ソース、jkcnsl からの書き込み。
