@@ -20,6 +20,7 @@ public static class ChannelsStreamPayloads
         yield return info.Video;
         yield return "co" + info.Id;
         yield return info.Video + "r";
+        yield return info.Video + "n";
     }
 
     public static ChannelSourceStatus CreateSourceStatus(ChannelManager mgr, string key, string defaultSourceType)
@@ -63,6 +64,7 @@ public static class ChannelsStreamPayloads
         "非公式" => "unofficial",
         "避難所" => "refuge",
         "ローカル" => "local",
+        "5ch" => "nichan",
         "-" => defaultSourceType,
         _ => "unknown",
     };
@@ -73,6 +75,7 @@ public static class ChannelsStreamPayloads
         "unofficial" => "非公式",
         "refuge" => "避難所",
         "local" => "ローカル",
+        "nichan" => "5ch",
         _ => "-",
     };
 
@@ -105,6 +108,7 @@ public static class ChannelsStreamPayloads
                     CreateSourceStatus(mgr, info.Video, "official"),
                     CreateSourceStatus(mgr, coChannel, "unofficial"),
                     CreateSourceStatus(mgr, info.Video + "r", "refuge"),
+                    CreateSourceStatus(mgr, info.Video + "n", "nichan"),
                 },
             };
         }),
@@ -132,6 +136,7 @@ public static class ChannelsStreamPayloads
                     CreateSourceStatus(mgr, info.Video, "official"),
                     CreateSourceStatus(mgr, coChannel, "unofficial"),
                     CreateSourceStatus(mgr, info.Video + "r", "refuge"),
+                    CreateSourceStatus(mgr, info.Video + "n", "nichan"),
                 },
             };
         }),

@@ -124,9 +124,12 @@ public class ChannelMonitorService : IHostedService
 
     public Task StopAsync(CancellationToken ct) => _channelManager.StopMonitoredAsync();
 
+    // 5ch（"5ch:"）はポーリング型でアクセスが視聴者数に依存しないため常時監視せず、
+    // コメントクライアントが接続している間だけ取得する。
     private static bool IsMonitorTarget(IConfigurationSection ch) =>
-        ch.Key.StartsWith("jk", StringComparison.Ordinal) ||
-        ch.Key.StartsWith("co", StringComparison.Ordinal);
+        (ch.Key.StartsWith("jk", StringComparison.Ordinal) ||
+         ch.Key.StartsWith("co", StringComparison.Ordinal)) &&
+        ch.Value?.StartsWith("5ch:", StringComparison.OrdinalIgnoreCase) != true;
 
     private static bool IsLocalStreamValue(string? upstreamValue) =>
         upstreamValue?.StartsWith("localstream:", StringComparison.OrdinalIgnoreCase) == true;

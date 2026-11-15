@@ -4,6 +4,7 @@ import type {
   ChannelInfo,
   ChannelSource,
   Chat,
+  NichanThreadsMessage,
   ChannelsStreamMessage,
   ProgramInfo,
   ScheduleResponse,
@@ -84,6 +85,9 @@ let scheduleDrag: {
   scrollTop: number
 } | null = null
 let commentLogQueue: Chat[] = []
+// 5ch ソースのスレ絞り込み（表示しないスレの id）。スレは入れ替わるので保存しない
+let nichanThreads: NichanThreadsMessage | null = null
+const nichanHiddenThreads = new Set<string>()
 let commentLogFlushScheduled = false
 const COMMENT_LOG_MAX_ITEMS = 100
 const COMMENT_LOG_FLUSH_LIMIT = 24
@@ -485,6 +489,7 @@ app.innerHTML = `
       </div>
     </section>
     <div id="comment-panel">
+      <div id="nichan-threads" hidden></div>
       <div id="comment-list-wrap"><ul id="comment-list"></ul></div>
       <div id="post-area" hidden>
         <button id="cmd-toggle" title="コマンドを選択" type="button">▼</button>
@@ -530,6 +535,7 @@ const programBanner = document.getElementById('program-banner')!
 const stageInfo   = document.getElementById('stage-info')!
 const connectionActionBtn = document.getElementById('connection-action-btn') as HTMLButtonElement
 const commentList = document.getElementById('comment-list')!
+const nichanThreadsEl = document.getElementById('nichan-threads') as HTMLElement
 const statusBar   = document.getElementById('status-bar')!
 const settingsBtn = document.getElementById('settings-btn')!
 const settingsPanel = document.getElementById('settings-panel') as HTMLElement
@@ -1070,7 +1076,8 @@ function renderChannelList(force = false) {
         })
         chListEl.appendChild(group)
         if (!collapsed) {
-          for (const source of sources)
+          // 5ch は任意の追加ソースなので、未設定なら空き行を出さない
+          for (const source of sources.filter(s => s.configured || s.sourceType !== 'nichan'))
             chListEl.appendChild(createSourceListItem(source, 'ch-sub grouped', ch.video))
         }
       } else {
@@ -1176,6 +1183,7 @@ function updateSourceListItem(el: HTMLElement, source: ChannelSource, program: P
   el.classList.toggle('unofficial-source', source.sourceType === 'unofficial')
   el.classList.toggle('refuge-source', source.sourceType === 'refuge')
   el.classList.toggle('local-source', source.sourceType === 'local')
+  el.classList.toggle('nichan-source', source.sourceType === 'nichan')
 
   const dot = el.querySelector<HTMLElement>('[data-role="dot"]')
   if (dot) {
@@ -1537,6 +1545,10 @@ function createSourceListItem(source: ChannelSource, className: string, channelV
 
 function appendSourceTarget(target: HTMLElement, source: ChannelSource, prefixSpace = false) {
   if (!source.configured) return
+  if (source.sourceType === 'nichan') {
+    appendNichanTarget(target, source, prefixSpace)
+    return
+  }
   if (source.status === 'fallbackLocal') {
     const scheduled = source.isReserved && source.scheduledStartUtc
       ? ` ${formatJst(source.scheduledStartUtc)} 予定`
@@ -1562,6 +1574,26 @@ function appendSourceTarget(target: HTMLElement, source: ChannelSource, prefixSp
       target.append(formatRefugeTarget(source.currentTarget))
     else
       target.append(source.currentTarget)
+  }
+}
+
+// 5ch: 追跡中のスレタイ（statusText の先頭）を、そのスレへのリンクとして表示する。
+// 書き込みはサーバー経由ではできないため、スレを開いて書き込んでもらう。
+function appendNichanTarget(target: HTMLElement, source: ChannelSource, prefixSpace: boolean) {
+  if (!source.running) return
+  if (prefixSpace) target.append(' ')
+  const firstThread = source.statusText?.split(' / ')[0] ?? ''
+  if (source.status === 'running' && source.currentTarget && /^https:\/\//.test(source.currentTarget)) {
+    const link = document.createElement('a')
+    link.href = source.currentTarget
+    link.target = '_blank'
+    link.rel = 'noreferrer'
+    link.textContent = firstThread || 'スレを開く'
+    link.title = source.statusText ?? ''
+    link.addEventListener('click', e => e.stopPropagation())
+    target.appendChild(link)
+  } else if (source.statusText) {
+    target.append(source.statusText)
   }
 }
 
@@ -1609,6 +1641,7 @@ function sourceClass(source: ChannelSource) {
   if (source.sourceType === 'unofficial') return 'unofficial-source'
   if (source.sourceType === 'refuge') return 'refuge-source'
   if (source.sourceType === 'local') return 'local-source'
+  if (source.sourceType === 'nichan') return 'nichan-source'
   return ''
 }
 
@@ -1663,6 +1696,7 @@ function selectChannel(video: string) {
   commentLogQueue = []
   commentLogFlushScheduled = false
   commentList.innerHTML = ''
+  resetNichanThreads()
   ws?.close()
   watchWs?.close()
   watchWs = null
@@ -1709,6 +1743,7 @@ function connectWs(video: string) {
     try {
       const obj = JSON.parse(e.data)
       if (obj.chat) handleChat(obj.chat as Chat)
+      else if (obj.nichan_threads) handleNichanThreads(obj.nichan_threads as NichanThreadsMessage)
     } catch { /* ignore */ }
   }
   ws.onclose = (e) => {
@@ -1828,6 +1863,7 @@ function startWatchKeepSeat(keepIntervalSec: unknown) {
 // ─── Comments ─────────────────────────────────────────────────────────────────
 function handleChat(chat: Chat) {
   if (ngSet.has(chat.user_id)) return
+  if (chat.nichan_thread && nichanHiddenThreads.has(chat.nichan_thread)) return
   const postedAt = pendingOwnTexts.get(chat.content)
   const isOwn = postedAt !== undefined && Date.now() - postedAt < 15000
   if (isOwn) pendingOwnTexts.delete(chat.content)
@@ -1872,6 +1908,7 @@ function createCommentLogEntry(chat: Chat) {
   const li = document.createElement('li')
   li.className = 'log-entry'
   li.dataset.uid = chat.user_id
+  if (chat.nichan_thread) li.dataset.nthread = chat.nichan_thread
   const time = new Date(chat.date * 1000).toLocaleTimeString('ja-JP',
     { hour: '2-digit', minute: '2-digit', second: '2-digit' })
   const timeEl = document.createElement('span')
@@ -1887,6 +1924,72 @@ function createCommentLogEntry(chat: Chat) {
   ngBtn.addEventListener('click', (e) => { e.stopPropagation(); addNg(chat.user_id) })
   li.append(timeEl, textEl, ngBtn)
   return li
+}
+
+// ─── 5ch thread filter ────────────────────────────────────────────────────────
+function resetNichanThreads() {
+  nichanThreads = null
+  nichanHiddenThreads.clear()
+  renderNichanThreads()
+}
+
+function handleNichanThreads(message: NichanThreadsMessage) {
+  nichanThreads = message
+  // 一覧から消えたスレの非表示指定は捨てる（同じ id のスレが再び選ばれたら表示に戻る）
+  const ids = new Set(message.threads.map(t => t.id))
+  for (const id of [...nichanHiddenThreads])
+    if (!ids.has(id)) nichanHiddenThreads.delete(id)
+  renderNichanThreads()
+  applyNichanFilterToLog()
+}
+
+function renderNichanThreads() {
+  nichanThreadsEl.innerHTML = ''
+  const threads = nichanThreads?.threads ?? []
+  // スレが 1 つ以下なら絞り込む意味がないので出さない
+  nichanThreadsEl.hidden = threads.length < 2
+  if (nichanThreadsEl.hidden) return
+  for (const thread of threads) {
+    const label = document.createElement('label')
+    label.className = 'nichan-thread'
+    if (thread.finished) label.classList.add('finished')
+    label.title = thread.title + (thread.programMatch ? '（番組名に一致）' : '') + (thread.finished ? '（終了）' : '')
+    const check = document.createElement('input')
+    check.type = 'checkbox'
+    check.checked = !nichanHiddenThreads.has(thread.id)
+    check.addEventListener('change', () => {
+      if (check.checked) nichanHiddenThreads.delete(thread.id)
+      else nichanHiddenThreads.add(thread.id)
+      applyNichanFilterToLog()
+    })
+    label.append(check)
+    if (thread.programMatch) {
+      const tag = document.createElement('span')
+      tag.className = 'nichan-thread-tag'
+      tag.textContent = '番組'
+      label.append(tag)
+    }
+    const title = document.createElement('span')
+    title.className = 'nichan-thread-title'
+    title.textContent = thread.title
+    const link = document.createElement('a')
+    link.className = 'nichan-thread-link'
+    link.href = thread.url
+    link.target = '_blank'
+    link.rel = 'noopener noreferrer'
+    link.textContent = '↗'
+    link.title = 'スレを開く'
+    label.append(title, link)
+    nichanThreadsEl.append(label)
+  }
+}
+
+// 表示済みのコメントログにも絞り込みを反映する（流れているコメントはそのまま）
+function applyNichanFilterToLog() {
+  for (const li of commentList.children as HTMLCollectionOf<HTMLElement>) {
+    const id = li.dataset.nthread
+    li.hidden = id !== undefined && nichanHiddenThreads.has(id)
+  }
 }
 
 // ─── Post comment ───────────────────────────────────────────────────────────
@@ -2215,6 +2318,7 @@ function updateStageInfo() {
   const typeStr   = source?.label ?? '-'
   const typeClass = source?.sourceType === 'official' ? 'si-official'
     : source?.sourceType === 'refuge' || source?.sourceType === 'local' ? 'si-refuge'
+    : source?.sourceType === 'nichan' ? 'si-nichan'
     : source?.sourceType === 'unofficial' ? 'si-unofficial' : 'si-unofficial'
   const typeBadge = ch ? `<span class="si-badge ${typeClass}">${typeStr}</span>` : ''
   const nameHtml  = `<div class="si-name">${typeBadge}${ch?.name ?? selectedChannel}</div>`

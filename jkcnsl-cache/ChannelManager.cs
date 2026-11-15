@@ -5,6 +5,7 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using jkcnsl_cache.Nichan;
 
 namespace jkcnsl_cache;
 
@@ -18,6 +19,10 @@ public class ChannelManager
     private readonly ChannelCatalog _channelCatalog;
     private readonly MetricsService _metrics;
     private readonly CommentStorageService _commentStorage;
+    private readonly NichanHttpClient _nichanHttp;
+    private readonly NichanBoardService _nichanBoards;
+    private readonly NichanBoardCatalog _nichanCatalog;
+    private readonly ProgramInfoService _programInfo;
     private readonly ConcurrentDictionary<string, UpstreamChannelBase> _channels = new();
     // upstreamValue -> それを共有するチャンネルキー群（エイリアス集計用）。
     // GetViewerCount 呼び出しのたびに _channels 全体を線形スキャンするのを避けるため、
@@ -40,8 +45,14 @@ public class ChannelManager
 
     public ChannelManager(IConfiguration config, ILogger<ChannelManager> logger, ILoggerFactory loggerFactory,
         NicovideoSearchService searchService, LocalStreamConnectionLimiter localStreamLimiter,
-        ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage)
+        ChannelCatalog channelCatalog, MetricsService metrics, CommentStorageService commentStorage,
+        NichanHttpClient nichanHttp, NichanBoardService nichanBoards, NichanBoardCatalog nichanCatalog,
+        ProgramInfoService programInfo)
     {
+        _programInfo = programInfo;
+        _nichanHttp = nichanHttp;
+        _nichanBoards = nichanBoards;
+        _nichanCatalog = nichanCatalog;
         _config = config;
         _logger = logger;
         _loggerFactory = loggerFactory;
@@ -334,6 +345,7 @@ public class ChannelManager
             _ when upstreamValue.StartsWith("nicovideo:ch", StringComparison.Ordinal) => "公式",
             "nicovideo:" => "非公式",
             _ when IsLocalStreamValue(upstreamValue) => "ローカル",
+            _ when IsNichanValue(upstreamValue) => "5ch",
             _ when upstreamValue.StartsWith("wss://", StringComparison.Ordinal) ||
                    upstreamValue.StartsWith("ws://", StringComparison.Ordinal) => "避難所",
             _ => "-"
@@ -435,7 +447,18 @@ public class ChannelManager
                 [channel] = 0;
 
             UpstreamChannelBase ch;
-            if (IsLocalStreamValue(upstreamValue))
+            if (IsNichanValue(upstreamValue))
+            {
+                ch = new NichanUpstreamChannel(channel, upstreamValue[NichanPrefix.Length..],
+                    _nichanHttp, _nichanBoards, _nichanCatalog, _programInfo, _config,
+                    _loggerFactory.CreateLogger<NichanUpstreamChannel>(),
+                    _metrics);
+                // 5ch のレスは既定では保存・エクスポートの対象にしない
+                if (_nichanHttp.Options.StoreComments)
+                    ch.CommentStorage = _commentStorage;
+                return ch;
+            }
+            else if (IsLocalStreamValue(upstreamValue))
             {
                 ch = new LocalStreamChannel(channel, _config,
                     _loggerFactory.CreateLogger<LocalStreamChannel>(),
@@ -460,6 +483,41 @@ public class ChannelManager
             ch.CommentStorage = _commentStorage;
             return ch;
         });
+
+    private const string NichanPrefix = "5ch:";
+
+    // ステータスページ「5ch」タブ用: 設定済みの 5ch ソースと、その取得状況
+    public NichanStatusPayload GetNichanStatus()
+    {
+        var options = _nichanHttp.Options;
+        var (totals, series, hosts) = _nichanHttp.Stats.Snapshot(_nichanHttp.GetBlockedUntil);
+        var order = _channelCatalog.All
+            .Select((info, index) => (info.Video + "n", index))
+            .ToDictionary(x => x.Item1, x => x.index, StringComparer.Ordinal);
+        var channels = _config.GetSection("CacheServer:Channels").GetChildren()
+            .Where(section => IsNichanValue(section.Value))
+            .OrderBy(section => order.TryGetValue(section.Key, out var index) ? index : int.MaxValue)
+            .ThenBy(section => section.Key, StringComparer.Ordinal)
+            .Select(section => _channels.TryGetValue(section.Key, out var ch) && ch is NichanUpstreamChannel nichan
+                ? nichan.GetStatusSnapshot(ch.ClientCount)
+                : new NichanChannelStatusDto(section.Key, "idle", null, false, 0, 0, 0, 0, []))
+            .ToArray();
+        return new NichanStatusPayload(
+            options.Enabled,
+            new
+            {
+                subjectIntervalSec = (int)options.SubjectInterval.TotalSeconds,
+                datIntervalSec = (int)options.DatInterval.TotalSeconds,
+                maxThreadsPerChannel = options.MaxThreadsPerChannel,
+                playbackDelaySec = (int)options.PlaybackDelay.TotalSeconds,
+                hostMinIntervalMs = (int)options.HostMinInterval.TotalMilliseconds,
+                storeComments = options.StoreComments,
+            },
+            totals, series, hosts, _nichanBoards.GetBoardStatuses(), channels);
+    }
+
+    private static bool IsNichanValue(string? upstreamValue) =>
+        upstreamValue?.StartsWith(NichanPrefix, StringComparison.OrdinalIgnoreCase) == true;
 
     private static bool IsLocalStreamValue(string? upstreamValue) =>
         upstreamValue?.StartsWith("localstream:", StringComparison.OrdinalIgnoreCase) == true;

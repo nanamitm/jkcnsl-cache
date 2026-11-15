@@ -260,6 +260,59 @@ co{id} チャンネル: 起動時から定期的にニコニコ生放送を検�
   に一致する非公式配信を自動検出します。対応 ID は ChannelList.cs を参照。
   スクレイピングに失敗した lv は次の検索バッチまで待機し、連続リトライを防止します。
 
+jk{id}n チャンネル（5ch）: 5ch 実況スレのレスをコメントとして配信します。
+  既定では無効です。CacheServer:Nichan:Enabled を true にしたうえで、Channels に
+  "5ch:"（板とキーワードからスレを自動選択）または "5ch:{スレのURL}"（スレ固定）を設定します。
+
+  "Channels": {
+    "jk1n":   "5ch:",
+    "jk141n": "5ch:",
+    "jk9n":   "5ch:https://fate.5ch.io/test/read.cgi/livemx/1794700000/"
+  },
+  "Nichan": {
+    "Enabled": true
+  }
+
+  ・コメントクライアントが接続している間だけ取得します（起動時からの常時取得はしません）。
+    /watch だけが接続されている状態が2分続いた場合も取得を休止します。
+  ・板とキーワードの既定の対応表は Nichan/NichanBoardCatalog.cs にあります。
+    Nichan:Boards で上書き・追加できます（Excludes は一致しても除外する語）。
+      "Boards": { "jk141": [ { "Board": "https://tanuki.5ch.io/livebs2/", "Keywords": ["BS日テレ"] } ] }
+  ・スレは「勢い（1時間あたりのレス数）」の高い順に MaxThreadsPerChannel 本（既定3）を追跡します。
+    番組表（TVer など）で現在の番組がわかるチャンネルでは、番組名に一致するスレのうち最も勢いのある
+    1 本を必ず含めます（「[字]」「＃6」「（49-54）」などを除いた主タイトルで照合。『』で囲まれた作品名があれば
+    その中身でも照合します。番組表で番組名と副題が
+    つながっている場合に備え、スレタイの先頭の語が番組名の先頭にあるときも一致とします）。番組が切り替わると
+    次の一覧更新を待たずに選び直し、前の番組のスレも 5 分間は一致扱いにします。
+  ・アニメ・特撮実況板（liveanime）は作品ごとにスレが立つため、番組がアニメ（またはジャンル不明）の
+    ときだけ見て、番組名に一致するスレだけを対象にします。Boards で独自の板にこの扱いをさせる場合は
+    "ProgramOnly": true を指定します。
+    レス数が1000に達したスレや dat 落ちしたスレは外れ、次の一覧更新で次スレに移ります。
+  ・レスは「書き込み時刻 + PlaybackDelaySeconds」に配信します（既定は DatIntervalSeconds + 5 秒）。
+    ポーリングでまとめて届いたレスを書き込み時の間隔で流すためです。0 にすると届いた時点ですぐ流します。
+  ・5ch への書き込みはできません（サーバー経由で投稿すると全員がサーバーの IP で書き込むことになるため）。
+    Webクライアントではスレタイがスレへのリンクになります。
+  ・Webクライアントでは、追跡中のスレが 2 本以上あるとコメント欄の上にスレの一覧が出て、
+    チェックを外したスレのコメントを表示しないようにできます（取得はサーバー側で続きます）。
+  ・5ch のレスは既定ではコメント保存・エクスポートの対象にしません（StoreComments）。
+  ・インターネットに公開しているサーバーで有効にすると、5ch の書き込みを第三者に再配信することになります。
+    有効にするかどうかは運用者の判断で行ってください。
+  ・NicoJK からは refugeUri=wss://{サーバー}/watch/{jkID}n で 5ch だけを受信できます。
+    refugeMixing=1 と組み合わせると「公式 + 5ch」の混合表示になります。
+
+  Nichan の設定項目（括弧内は既定値）:
+    Enabled (false), UserAgent ("Monazilla/1.00 (jkcnsl-cache)"),
+    SubjectIntervalSeconds (60, 下限30), DatIntervalSeconds (10, 下限5),
+    MaxThreadsPerChannel (3, 1〜5), HostMinIntervalMilliseconds (1000, 下限200),
+    MaxConcurrentRequests (2), InitialBacklogSeconds (30), PlaybackDelaySeconds,
+    MaxCommentLength (120), MaxLines (4, これを超える行数のレスは AA とみなして捨てる),
+    StoreComments (false), HistoryLimit (20), HistorySeconds (30), BlockedWaitMinutes (60)
+  5ch から 401/403 が返ったホストへは BlockedWaitMinutes の間アクセスしません。
+  429/503 の場合は Retry-After に従います。
+  取得状況はステータスページ（StatusPort）の「5ch」タブで確認できます。リクエスト数・304率・エラー・
+  429/503 の推移、ホストごとの集計と停止状態、ソースごとに追跡中のスレ、取得した板を表示します
+  （JSON は /api/admin/nichan。集計はメモリ上のみで、再起動すると消えます）。
+
 ■Webクライアントの使い方
 
 ブラウザで http://{サーバーIP}:{MainPort} を開くと内蔵 Webクライアントが表示されます。

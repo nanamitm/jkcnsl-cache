@@ -491,6 +491,48 @@ body {
 }
 #comment-panel[hidden] { display: none; }
 
+/* 5ch ソースのスレ絞り込み */
+#nichan-threads {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  color: var(--text-muted);
+  max-height: 52px;
+  overflow-y: auto;
+}
+#nichan-threads[hidden] { display: none; }
+.nichan-thread {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  min-width: 0;
+  cursor: pointer;
+}
+.nichan-thread input { margin: 0; flex-shrink: 0; }
+.nichan-thread-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 22em;
+}
+.nichan-thread:has(input:not(:checked)) .nichan-thread-title { text-decoration: line-through; opacity: .6; }
+.nichan-thread.finished .nichan-thread-title { opacity: .6; }
+.nichan-thread-tag {
+  flex-shrink: 0;
+  padding: 0 4px;
+  border: 1px solid var(--accent);
+  border-radius: 3px;
+  color: var(--accent);
+  font-size: 10px;
+}
+.nichan-thread-link { flex-shrink: 0; color: var(--text-faint); text-decoration: none; }
+.nichan-thread-link:hover { color: var(--accent); }
+.log-entry[hidden] { display: none; }
+
 /* ── Schedule ───────────────────────────── */
 #schedule-view {
   flex: 1;
@@ -1054,6 +1096,7 @@ body {
 .si-official   { color: var(--accent); }
 .si-unofficial { color: #ce93d8; }
 .si-refuge     { color: #80cbc4; }
+.si-nichan     { color: #ce93d8; }
 .si-status { font-size: 13px; }
 .si-connecting  { color: var(--text-muted); }
 .si-disconnected { color: #ef5350; }
@@ -1427,6 +1470,7 @@ body {
 .official-source .ch-sub-target { color: var(--accent); }
 .refuge-source .ch-sub-target { color: #80cbc4; }
 .local-source .ch-sub-target { color: #b6e388; }
+.nichan-source .ch-sub-target { color: #ce93d8; }
 .ch-sub-target a { color: inherit; text-decoration: none; }
 .ch-sub-target a:hover { text-decoration: underline; }
 
