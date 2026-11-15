@@ -310,6 +310,69 @@ Page {
             }
         }
 
+        // 5ch のスレ表示バー（5ch ソースのときだけ）。タップでスレをブラウザーで開く
+        Rectangle {
+            id: threadBar
+            width: parent.width
+            readonly property var threads: commentWs.nichanThreads || []
+            readonly property var first: threads.length > 0 ? threads[0] : null
+            height: first ? 36 : 0
+            visible: height > 0
+            color: root.clr.bg2
+
+            function threadLabel(t) {
+                return (t.programMatch ? "[番組] " : "") + t.title + (t.finished ? "（終了）" : "")
+            }
+
+            RowLayout {
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                spacing: 6
+
+                Label {
+                    Layout.fillWidth: true
+                    text: threadBar.first ? threadBar.threadLabel(threadBar.first) : ""
+                    elide: Text.ElideRight
+                    font.pixelSize: 12
+                    color: root.clr.text
+                }
+                Label {
+                    visible: threadBar.threads.length > 1
+                    text: "他" + (threadBar.threads.length - 1) + "スレ"
+                    font.pixelSize: 11
+                    color: root.clr.sub
+                }
+                Label {
+                    text: "↗"
+                    font.pixelSize: 14
+                    color: Material.accentColor
+                }
+            }
+
+            TapHandler {
+                onTapped: {
+                    if (threadBar.threads.length === 1)
+                        Qt.openUrlExternally(threadBar.first.url)
+                    else if (threadBar.threads.length > 1)
+                        threadMenu.popup(threadBar, 0, 0)
+                }
+            }
+
+            Menu {
+                id: threadMenu
+                Instantiator {
+                    model: threadBar.threads
+                    delegate: MenuItem {
+                        text: threadBar.threadLabel(modelData)
+                        onTriggered: Qt.openUrlExternally(modelData.url)
+                    }
+                    onObjectAdded: (index, object) => threadMenu.insertItem(index, object)
+                    onObjectRemoved: (index, object) => threadMenu.removeItem(object)
+                }
+            }
+        }
+
         // ソース選択バー
         Rectangle {
             id: sourceBar
@@ -347,12 +410,9 @@ Page {
                             font.pixelSize: 11
                             leftPadding: 8; rightPadding: 8
                             anchors.verticalCenter: parent.verticalCenter
-                            enabled: src.commentable
-                            Material.foreground: {
-                                if (!src.commentable) return root.clr.sub
-                                if (highlighted)      return Material.accentColor
-                                return root.clr.text
-                            }
+                            // 投稿できないソース（5ch）も閲覧はできるので選べるようにする。
+                            // 投稿欄は postInputVisible で別に出し分けている
+                            Material.foreground: highlighted ? Material.accentColor : root.clr.text
                             onClicked: {
                                 if (highlighted) return
                                 commentWs.connectTo(settings.serverUrl, src.key)
