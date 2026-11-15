@@ -31,21 +31,39 @@ public static partial class NichanProgramMatcher
         // 「中国◇」「韓国◇」のような分類の前置きを落とす
         t = CategoryPrefixRegex().Replace(t, "");
 
+        var keys = new List<string>();
+
         // アニメ「作品名」 のように、ジャンル名 + 鉤括弧の場合は鉤括弧の中身が主タイトル
         var quoted = GenreQuotedRegex().Match(t);
         if (quoted.Success)
-            t = quoted.Groups["title"].Value;
+        {
+            AddCoreKeys(keys, quoted.Groups["title"].Value);
+            return keys;
+        }
 
-        // 話数・サブタイトル・区切り記号以降を落とす
-        t = EpisodeSplitRegex().Split(t)[0];
+        // 傑作ミステリー『作品名』 のように、二重鉤括弧で作品名を囲む場合は中身を主タイトルとし、
+        // 外側（"傑作ミステリー"）も枠の名前としてキーにする
+        var work = WorkQuotedRegex().Match(t);
+        if (work.Success)
+        {
+            AddCoreKeys(keys, work.Groups["title"].Value);
+            AddCoreKeys(keys, t.Remove(work.Index, work.Length));
+            return keys;
+        }
 
-        var keys = new List<string>();
+        AddCoreKeys(keys, t);
+        return keys;
+    }
+
+    // 話数・サブタイトル以降を落とした主タイトルと、その先頭の語をキーにする
+    private static void AddCoreKeys(List<string> keys, string text)
+    {
+        var t = EpisodeSplitRegex().Split(text)[0];
         AddKey(keys, t);
         // 先頭の語（"バジリスク 〜甲賀忍法帖〜" の "バジリスク"）も、スレタイで副題が省かれる場合に備えてキーにする
         var first = WordSplitRegex().Split(t.Trim()).FirstOrDefault(s => s.Length > 0);
         if (first != null)
             AddKey(keys, first);
-        return keys;
     }
 
     // 照合用にスレタイ・キーを正規化する（NFKC・小文字化・空白と一部記号の除去）
@@ -111,6 +129,9 @@ public static partial class NichanProgramMatcher
 
     [GeneratedRegex(@"^\s*(?:アニメ|ドラマ|映画|特撮|時代劇|韓国ドラマ|中国ドラマ|連続アニメ)?\s*[「『](?<title>[^」』]+)[」』]")]
     private static partial Regex GenreQuotedRegex();
+
+    [GeneratedRegex(@"『(?<title>[^』]+)』")]
+    private static partial Regex WorkQuotedRegex();
 
     [GeneratedRegex(@"^\s*[^◇◆\s]{1,6}[◇◆]")]
     private static partial Regex CategoryPrefixRegex();
