@@ -1056,6 +1056,7 @@ function renderChannelList(force = false) {
         const group = document.createElement('li')
         group.className = 'ch-group-label'
         group.dataset.channelVideo = ch.video
+        group.dataset.configuredKeys = configuredSourceKeys(ch)
         const collapsed = collapsedChannels.has(ch.video)
         group.classList.toggle('collapsed', collapsed)
         const groupDot = document.createElement('span')
@@ -1081,8 +1082,8 @@ function renderChannelList(force = false) {
         })
         chListEl.appendChild(group)
         if (!collapsed) {
-          // 5ch は任意の追加ソースなので、未設定なら空き行を出さない
-          for (const source of sources.filter(s => s.configured || s.sourceType !== 'nichan'))
+          // 未設定のソースは空き行になるだけなので出さない
+          for (const source of configuredSources)
             chListEl.appendChild(createSourceListItem(source, 'ch-sub grouped', ch.video))
         }
       } else {
@@ -1093,6 +1094,7 @@ function renderChannelList(force = false) {
           (!source?.configured ? ' disabled' : '')
         li.dataset.video = source?.key ?? ch.video
         li.dataset.channelVideo = ch.video
+        li.dataset.configuredKeys = configuredSourceKeys(ch)
         if (source?.key) li.dataset.sourceKey = source.key
 
         const dot = document.createElement('span')
@@ -1150,6 +1152,12 @@ function updateChannelListItems() {
       return
     }
 
+    // 設定済みソースが変わったら行の構成（まとめ方・展開時の行）が変わるので作り直す
+    if (el.dataset.configuredKeys != null && el.dataset.configuredKeys !== configuredSourceKeys(channel)) {
+      missing = true
+      return
+    }
+
     if (el.classList.contains('ch-group-label')) {
       updateGroupListItem(el, channel)
       return
@@ -1167,6 +1175,10 @@ function updateChannelListItems() {
   if (missing && !channelListPointerInside)
     renderChannelList(true)
   return !missing
+}
+
+function configuredSourceKeys(channel: ChannelInfo) {
+  return channel.sources.filter(source => source.configured).map(source => source.key).join(',')
 }
 
 function updateGroupListItem(el: HTMLElement, channel: ChannelInfo) {
