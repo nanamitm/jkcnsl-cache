@@ -80,12 +80,32 @@ public static partial class NichanDatParser
 
     private static string StripAndDecode(string html)
     {
-        var text = WebUtility.HtmlDecode(TagRegex().Replace(html, ""));
-        // 制御文字はコメントに残さない
+        var text = TagRegex().Replace(html, "");
+        // ブラウザは "&#97b" のような ; なしの数値参照も "a" と表示するが、HtmlDecode は
+        // 戻さない。NG ワードよけに使われるので、; を補ってからブラウザと同じく戻す。
+        text = WebUtility.HtmlDecode(UnterminatedNumericRefRegex().Replace(text, "$0;"));
         var sb = new StringBuilder(text.Length);
-        foreach (var c in text)
-            sb.Append(char.IsControl(c) ? ' ' : c);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (char.IsControl(c))
+                sb.Append(' '); // 制御文字はコメントに残さない
+            else if (CharUnicodeInfo.GetUnicodeCategory(c) == UnicodeCategory.Format && !IsEmojiJoiner(text, i))
+                continue; // ゼロ幅文字・向きの制御文字は見えないまま NG ワードを分断できるので消す
+            else
+                sb.Append(c);
+        }
         return sb.ToString().Trim();
+    }
+
+    // 絵文字の合成(👨‍👩‍👧)に使う ZWJ だけは残す。直前が絵文字(サロゲートペア・記号・異体字セレクタ)のときに限る。
+    private static bool IsEmojiJoiner(string text, int i)
+    {
+        if (text[i] != '‍' || i == 0)
+            return false;
+        var prev = text[i - 1];
+        return char.IsLowSurrogate(prev) || prev == '️' ||
+            CharUnicodeInfo.GetUnicodeCategory(prev) == UnicodeCategory.OtherSymbol;
     }
 
     // subject.txt の 1 行: "1794698457.dat<>スレタイ (92)"
@@ -107,6 +127,10 @@ public static partial class NichanDatParser
 
     [GeneratedRegex(@"<br\s*/?>", RegexOptions.IgnoreCase)]
     private static partial Regex BrRegex();
+
+    // 数字を最後まで読んだ(アトミック)うえで ; が続かない数値参照。"&#971;" を "&#97" で切らない。
+    [GeneratedRegex(@"&#(?>[0-9]+|[xX][0-9a-fA-F]+)(?!;)")]
+    private static partial Regex UnterminatedNumericRefRegex();
 
     [GeneratedRegex("<[^>]*>")]
     private static partial Regex TagRegex();
