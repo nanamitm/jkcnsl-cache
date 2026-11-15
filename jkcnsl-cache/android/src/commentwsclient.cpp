@@ -1,4 +1,5 @@
 #include "commentwsclient.h"
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkRequest>
@@ -41,6 +42,7 @@ void CommentWsClient::connectTo(const QString &serverBaseUrl, const QString &cha
     m_channel  = channel;
     m_shouldConnect = true;
     m_reconnectMs   = 1000;
+    clearNichanThreads();
     emit channelChanged();
     doConnect();
 }
@@ -68,6 +70,10 @@ void CommentWsClient::onTextMessage(const QString &message) {
     const auto doc = QJsonDocument::fromJson(message.toUtf8());
     if (!doc.isObject()) return;
     const auto obj = doc.object();
+    if (obj.contains(QStringLiteral("nichan_threads"))) {
+        handleNichanThreads(obj[QStringLiteral("nichan_threads")].toObject());
+        return;
+    }
     if (!obj.contains(QStringLiteral("chat"))) return;
 
     const auto chat = obj[QStringLiteral("chat")].toObject();
@@ -82,6 +88,32 @@ void CommentWsClient::onTextMessage(const QString &message) {
     map[QStringLiteral("content")]   = chat[QStringLiteral("content")].toString();
     map[QStringLiteral("mail")]      = chat[QStringLiteral("mail")].toString();
     emit chatReceived(map);
+}
+
+// サーバーは接続時・スレの選び直し時に、その時点のスレ一覧をまるごと送ってくる。
+// 並びはサーバー側で番組に一致するスレ優先・新しいスレ優先に揃えてある
+void CommentWsClient::handleNichanThreads(const QJsonObject &message) {
+    QVariantList threads;
+    for (const auto &value : message[QStringLiteral("threads")].toArray()) {
+        const auto t = value.toObject();
+        const QString url = t[QStringLiteral("url")].toString();
+        if (url.isEmpty()) continue;
+        QVariantMap map;
+        map[QStringLiteral("id")]           = t[QStringLiteral("id")].toString();
+        map[QStringLiteral("title")]        = t[QStringLiteral("title")].toString();
+        map[QStringLiteral("url")]          = url;
+        map[QStringLiteral("programMatch")] = t[QStringLiteral("programMatch")].toBool();
+        map[QStringLiteral("finished")]     = t[QStringLiteral("finished")].toBool();
+        threads.append(map);
+    }
+    m_nichanThreads = threads;
+    emit nichanThreadsChanged();
+}
+
+void CommentWsClient::clearNichanThreads() {
+    if (m_nichanThreads.isEmpty()) return;
+    m_nichanThreads.clear();
+    emit nichanThreadsChanged();
 }
 
 void CommentWsClient::scheduleReconnect() {
