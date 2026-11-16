@@ -111,8 +111,9 @@ public sealed class NichanMomentumService : BackgroundService
                     _options.MaxThreadsPerChannel, ct))
                 .Select(s => s.Thread);
         }
-        // RecentMomentum は 1 時間あたりのレス数。観測期間が足りないスレ（起動直後・新スレ）は数えない
-        var perHour = threads.Sum(t => t.RecentMomentum ?? 0);
+        // DisplayMomentum は直近約 2 分の増え方から求めた 1 時間あたりのレス数（スレ選びに使う RecentMomentum は
+        // 10 分の平均で、表示には反応が遅い）。観測期間が足りないスレ（起動直後・新スレ）は数えない
+        var perHour = threads.Sum(t => t.DisplayMomentum ?? 0);
         return (int)Math.Round(perHour / 60, MidpointRounding.AwayFromZero);
     }
 }

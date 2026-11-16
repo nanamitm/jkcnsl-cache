@@ -263,5 +263,9 @@ TVTComment の `DatThreadLoader` と同じ方式で取得する。
   最初の 1 分は実際より多く出ていた。スレの追跡を始めてから 1 分（`NichanUpstreamChannel.IsForceReady` が
   false の間）は `NichanMomentumService` の値を返し、レスは配信時刻ではなく配信予定時刻（書き込み時刻 +
   `PlaybackDelay`）で数える（`RecordComment` の `forceAt`）。休止からの再開時も同じ。
+- subject.txt から求める表示用の勢いを、スレ選択用の 10 分窓（`RecentMomentum`）とは別に約 2 分の窓
+  （`DisplayMomentum`）で求めるようにした。受信者がいるときの勢いは直近 1 分の配信数なので、10 分平均だと
+  盛り上がりの変化への反応が遅く、受信者の有無で値がずれやすかった。subject.txt は `SubjectInterval` ごとにしか
+  取得しないため、2 分以上前の記録のうち最も新しいものとの差を使う。スレ選択は従来どおり 10 分窓のまま。
 - 未対応: 
   サーバー側での混合ソース、jkcnsl からの書き込み。
