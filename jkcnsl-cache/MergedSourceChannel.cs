@@ -158,7 +158,8 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
                     // 受信者がいないまま動き続けると、元ソースを購読したままになり（元ソースからは受信者 1 に見える）、
                     // 5ch の取得も止まらない。止め損ねがあってもここで自分から止まる
                     var now = DateTimeOffset.UtcNow;
-                    if (ClientCount > 0)
+                    // 監視専用チャンネルは受信者がいなくても動かし続ける（_release も止めない）
+                    if (ClientCount > 0 || IsMonitored)
                         lastClientSeen = now;
                     else if (now - lastClientSeen > IdleAfter)
                     {
