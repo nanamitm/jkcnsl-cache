@@ -258,5 +258,10 @@ TVTComment の `DatThreadLoader` と同じ方式で取得する。
   （受信者がいる間は従来どおり配信したレス数）。取得は subject.txt だけで、板ごとの共有キャッシュを通るため
   板 1 つにつき `SubjectInterval` に 1 回。dat は取得しない。`BackgroundMomentum: false` で無効にできる。
   値は `SubjectInterval` × 3 より古くなると使わない（取得失敗やホスト停止が続いたとき）。
+- 受信者が接続・切断した瞬間に 5ch ソースの勢いが急変していたのを直した。受信者が来るとチャンネルを作り直すので
+  配信数（直近 1 分）は必ず 0 から始まり、さらにさかのぼり配信（`InitialBacklog`）のレスが配信時刻で数えられて
+  最初の 1 分は実際より多く出ていた。スレの追跡を始めてから 1 分（`NichanUpstreamChannel.IsForceReady` が
+  false の間）は `NichanMomentumService` の値を返し、レスは配信時刻ではなく配信予定時刻（書き込み時刻 +
+  `PlaybackDelay`）で数える（`RecordComment` の `forceAt`）。休止からの再開時も同じ。
 - 未対応: 
   サーバー側での混合ソース、jkcnsl からの書き込み。

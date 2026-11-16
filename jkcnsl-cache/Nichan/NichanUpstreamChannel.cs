@@ -8,6 +8,8 @@ namespace jkcnsl_cache.Nichan;
 public sealed class NichanUpstreamChannel : UpstreamChannelBase
 {
     private static readonly TimeSpan IdleAfter = TimeSpan.FromMinutes(2);
+    // Force（直近 1 分の配信数）が 1 分ぶんたまるまでの時間
+    private static readonly TimeSpan ForceWarmUp = TimeSpan.FromMinutes(1);
 
     private readonly NichanOptions _options;
     private readonly NichanHttpClient _http;
@@ -22,6 +24,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
     private readonly Queue<(DateTimeOffset At, byte[] Message)> _history = new();
     private readonly Dictionary<string, ThreadState> _threads = new(StringComparer.Ordinal);
     private long _startedAtTicks;
+    // Force が実際の勢いを表すようになる時刻（スレの追跡を始めてから ForceWarmUp 後）。追跡前は long.MaxValue
+    private long _forceReadyAtTicks = long.MaxValue;
     private long _nextNo;
     private long _pendingSeq;
     private string _status = "idle";
@@ -41,6 +45,11 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
             return ticks == 0 ? null : new DateTimeOffset(ticks, TimeSpan.Zero);
         }
     }
+
+    // Force が直近 1 分の配信数として使えるか。
+    // 取得を始めた直後（受信者が来た直後・休止からの再開直後）は配信数がまだ 1 分ぶんたまっておらず、
+    // 0 から増えていくだけなので、その間の勢いは subject.txt から求めた値（NichanMomentumService）を使う。
+    public bool IsForceReady => DateTimeOffset.UtcNow.UtcTicks >= Interlocked.Read(ref _forceReadyAtTicks);
 
     public NichanUpstreamChannel(string channel, string target, NichanHttpClient http,
         NichanBoardService boards, NichanBoardCatalog catalog, ProgramInfoService? programs,
@@ -126,6 +135,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         _logger.LogInformation("[{Channel}] 5ch 取得を開始しました: target={Target}",
             _channel, _fixedThread?.ThreadUri.ToString() ?? "自動選択");
 
+        Interlocked.Exchange(ref _forceReadyAtTicks, long.MaxValue);
         using var dispatchCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         var dispatchTask = DispatchLoopAsync(dispatchCts.Token);
         try
@@ -168,6 +178,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     idle = false;
                     nextSelect = DateTimeOffset.MinValue;
                     lastSelectAt = null;
+                    Interlocked.Exchange(ref _forceReadyAtTicks, long.MaxValue);
                     lock (_lock) _threads.Clear();
                 }
             }
@@ -199,6 +210,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     // 初回は InitialBacklog 分、それ以降に見つかったスレは前回の選択時点までさかのぼって流す
                     var backlogFrom = (lastSelectAt ?? now) - _options.InitialBacklog;
                     ApplySelection(selected, backlogFrom);
+                    if (lastSelectAt == null)
+                        Interlocked.Exchange(ref _forceReadyAtTicks, (DateTimeOffset.UtcNow + ForceWarmUp).UtcTicks);
                     lastSelectAt = now;
                     // さかのぼって流すレスより先にスレ一覧が届くよう、選択直後にも送る
                     await PublishThreadListAsync();
@@ -361,7 +374,7 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                 var due = postedAt + _options.PlaybackDelay;
                 if (due > now + _options.PlaybackDelay)
                     due = now + _options.PlaybackDelay;
-                _pending.Enqueue(new PendingRes(postedAt, userId, text, state.Loader.Address.Identity, res.Number),
+                _pending.Enqueue(new PendingRes(postedAt, userId, text, state.Loader.Address.Identity, res.Number, due),
                     (due, ++_pendingSeq));
                 added++;
             }
@@ -394,7 +407,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
                     var no = Interlocked.Increment(ref _nextNo);
                     var message = CreateChatJson(no, item, now);
                     _history.Enqueue((now, message));
-                    RecordComment(no);
+                    // さかのぼって流すレス（配信予定時刻が過去）は、その予定時刻で勢いに数える
+                    RecordComment(no, item.Due);
                     (messages ??= []).Add(message);
                 }
                 TrimHistory(now);
@@ -513,7 +527,8 @@ public sealed class NichanUpstreamChannel : UpstreamChannelBase
         }
     }
 
-    private sealed record PendingRes(DateTimeOffset PostedAt, string UserId, string Text, string ThreadId, int ResNo);
+    private sealed record PendingRes(DateTimeOffset PostedAt, string UserId, string Text, string ThreadId, int ResNo,
+        DateTimeOffset Due);
 
     private sealed class ThreadState
     {
