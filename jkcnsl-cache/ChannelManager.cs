@@ -135,9 +135,10 @@ public class ChannelManager
     public async Task HandleWatchSessionAsync(string channel, WebSocket ws, CancellationToken ct)
     {
         _metrics.WatchConnected();
+        string? canonical = null;
         try
         {
-            var canonical = ResolveChannel(channel)!;
+            canonical = ResolveChannel(channel)!;
             var upstreamValue = GetUpstreamValue(canonical)!;
             var isLocalStream = IsLocalStreamValue(upstreamValue);
             var publicBase = (_config["CacheServer:PublicBaseUrl"] ?? "ws://localhost:5000").TrimEnd('/');
@@ -320,6 +321,9 @@ public class ChannelManager
         finally
         {
             _metrics.WatchDisconnected();
+            // /watch だけつないで /comment に来なかった場合も、開始したチャンネルを残さない
+            // （統合ソースが残ると、元の 5ch・避難所を購読したまま取得を続けてしまう）
+            if (canonical != null) ReleaseIfIdle(canonical);
         }
     }
 
@@ -341,21 +345,22 @@ public class ChannelManager
     public async Task HandleCommentSessionAsync(string channel, WebSocket ws, CancellationToken ct)
     {
         _metrics.CommentConnected();
+        string? canonical = null;
         try
         {
-        var canonical = ResolveChannel(channel)!;
-        var upstreamValue = GetUpstreamValue(canonical) ?? "";
-        var upstream = GetOrCreateChannel(canonical, upstreamValue);
-        upstream.EnsureRunning();
+            canonical = ResolveChannel(channel)!;
+            var upstreamValue = GetUpstreamValue(canonical) ?? "";
+            var upstream = GetOrCreateChannel(canonical, upstreamValue);
+            upstream.EnsureRunning();
 
-        await upstream.AddClientAndWaitAsync(ws, channel, ct);
-
-        // 監視専用チャンネルは停止しない。クライアントが全員切断した通常チャンネルは停止
-        ReleaseIfIdle(canonical);
+            await upstream.AddClientAndWaitAsync(ws, channel, ct);
         }
         finally
         {
             _metrics.CommentDisconnected();
+            // 監視専用チャンネルは停止しない。クライアントが全員切断した通常チャンネルは停止
+            // （セッションが例外で終わったときも止め損ねないよう finally で行う）
+            if (canonical != null) ReleaseIfIdle(canonical);
         }
     }
 
