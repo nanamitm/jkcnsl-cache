@@ -14,6 +14,8 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
 {
     private const string RefugeSource = "refuge";
     private const string NichanSource = "nichan";
+    // コメント受信者がいない状態がこれだけ続いたら自分から止まる
+    private static readonly TimeSpan IdleAfter = TimeSpan.FromMinutes(2);
 
     private readonly string _threadId;
     private readonly string _refugeKey;
@@ -143,6 +145,7 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
             // 購読先のチャンネルが作り直されたり止まったりしていないか、ときどき確かめる
             var refreshTask = Task.Delay(TimeSpan.FromSeconds(15), ct);
             Task<bool>? readTask = null;
+            var lastClientSeen = DateTimeOffset.UtcNow;
             while (!ct.IsCancellationRequested)
             {
                 // 単一読み手のチャンネルなので、待ち受けは常に 1 つだけにする
@@ -151,9 +154,21 @@ public sealed class MergedSourceChannel : UpstreamChannelBase
                 if (completed == refreshTask)
                 {
                     await refreshTask;
+                    refreshTask = Task.Delay(TimeSpan.FromSeconds(15), ct);
+                    // 受信者がいないまま動き続けると、元ソースを購読したままになり（元ソースからは受信者 1 に見える）、
+                    // 5ch の取得も止まらない。止め損ねがあってもここで自分から止まる
+                    var now = DateTimeOffset.UtcNow;
+                    // 監視専用チャンネルは受信者がいなくても動かし続ける（_release も止めない）
+                    if (ClientCount > 0 || IsMonitored)
+                        lastClientSeen = now;
+                    else if (now - lastClientSeen > IdleAfter)
+                    {
+                        _logger.LogInformation("[{Channel}] 受信者がいないため統合ソースを停止します", _channel);
+                        _release(_channel);
+                        continue;
+                    }
                     refuge.Refresh();
                     nichan.Refresh();
-                    refreshTask = Task.Delay(TimeSpan.FromSeconds(15), ct);
                     continue;
                 }
                 var hasData = await readTask;
