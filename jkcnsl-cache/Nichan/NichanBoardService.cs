@@ -5,9 +5,10 @@ using System.Text.RegularExpressions;
 namespace jkcnsl_cache.Nichan;
 
 // RecentMomentum: 直近の subject.txt 取得間で増えたレス数から求めた勢い（1 時間あたりのレス数）。
-// 観測期間が足りないとき（起動直後・新スレ）は null。
+// 観測期間が足りないとき（起動直後・新スレ）は null。スレの順位付けに使う。
+// DisplayMomentum: 同じく 1 時間あたりのレス数だが、勢いの表示用に短い窓（約 2 分）で求めたもの。
 public sealed record NichanThreadInfo(NichanThreadAddress Address, string Title, int ResCount,
-    double? RecentMomentum = null);
+    double? RecentMomentum = null, double? DisplayMomentum = null);
 
 // subject.txt を板単位で共有キャッシュする。
 // livebs2 のように複数チャンネルが同じ板を使っても、取得は SubjectInterval ごとに 1 回で済む。
@@ -19,6 +20,10 @@ public sealed partial class NichanBoardService
     internal static readonly TimeSpan MomentumWindow = TimeSpan.FromMinutes(10);
     // これより短い観測期間では直近の勢いを出さない（1 回分の増減で順位が大きく揺れないように）
     internal static readonly TimeSpan MomentumMinSpan = TimeSpan.FromMinutes(2);
+    // 勢いの表示用の観測窓。受信者がいるときの勢い（直近 1 分の配信数）に近い速さで変化に追従させる。
+    // subject.txt の取得は SubjectInterval ごとなので、これ以上前の記録のうち最も新しいものとの差を使う
+    // （実際の観測期間は 2 分〜2 分 + 取得間隔）。
+    internal static readonly TimeSpan DisplayMomentumWindow = TimeSpan.FromMinutes(2);
 
     private readonly NichanHttpClient _http;
     private readonly ILogger<NichanBoardService> _logger;
@@ -131,7 +136,18 @@ public sealed partial class NichanBoardService
             var span = now - oldestAt;
             if (span >= MomentumMinSpan)
                 momentum = Math.Max(0, thread.ResCount - oldestCount) / span.TotalHours;
-            result.Add(thread with { RecentMomentum = momentum });
+
+            // 記録は古い順に並んでいる。DisplayMomentumWindow 以上前の記録のうち最も新しいものを基準にする
+            double? displayMomentum = null;
+            (DateTimeOffset At, int ResCount)? displayBase = null;
+            foreach (var sample in samples)
+            {
+                if (now - sample.At < DisplayMomentumWindow) break;
+                displayBase = sample;
+            }
+            if (displayBase is { } b)
+                displayMomentum = Math.Max(0, thread.ResCount - b.ResCount) / (now - b.At).TotalHours;
+            result.Add(thread with { RecentMomentum = momentum, DisplayMomentum = displayMomentum });
         }
         // 一覧から消えたスレ（dat 落ち）の記録は捨てる
         foreach (var key in cache.Samples.Keys.Where(k => !seen.Contains(k)).ToArray())
