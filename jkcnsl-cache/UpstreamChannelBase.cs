@@ -28,6 +28,7 @@ public abstract class UpstreamChannelBase
     private long _connectionAttemptSeq = 0;
     private long _currentConnectionAttemptId = 0;
     private readonly Queue<long> _recentMs = new();
+    private long _lastRecentMs;
     private readonly object _statsLock = new();
 
     public bool IsMonitored { get; set; }
@@ -302,15 +303,25 @@ public abstract class UpstreamChannelBase
         await _runTask;
     }
 
-    protected void RecordComment(long no)
+    // forceAt: 勢い（直近 1 分のコメント数）に数える時刻。省略時は現在時刻。
+    // 過去のコメントをまとめて流すとき（5ch のさかのぼり配信）に、本来流れるはずだった時刻を渡すと、
+    // まとめて流した分で勢いが水増しされない。
+    protected void RecordComment(long no, DateTimeOffset? forceAt = null)
     {
         Interlocked.Increment(ref _totalComments);
         long current = Interlocked.Read(ref _lastResNo);
         while (no > current && Interlocked.CompareExchange(ref _lastResNo, no, current) != current)
             current = Interlocked.Read(ref _lastResNo);
         var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var at = forceAt is { } t ? Math.Min(now, t.ToUnixTimeMilliseconds()) : now;
         lock (_statsLock)
-            _recentMs.Enqueue(now);
+        {
+            // Force は先頭から古いものを捨てるので、時刻が前後しないようにそろえる
+            if (at < _lastRecentMs)
+                at = _lastRecentMs;
+            _lastRecentMs = at;
+            _recentMs.Enqueue(at);
+        }
     }
 
     protected async Task BroadcastAsync(ReadOnlyMemory<byte> message)

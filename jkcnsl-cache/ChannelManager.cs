@@ -419,9 +419,11 @@ public class ChannelManager
 
     // 勢い（直近 1 分のコメント数）。5ch ソースはコメント受信者がいる間しか dat を取得しないので、
     // 受信者がいないときは subject.txt のレス数の増え方から求めた値（NichanMomentumService）を返す。
+    // 受信者が来た直後も、配信数が 1 分ぶんたまるまでは同じ値を返す（接続した瞬間に勢いが 0 へ落ちないように）。
     private int GetForce(string canonical, string? upstreamValue, UpstreamChannelBase? channel)
     {
-        if (IsNichanValue(upstreamValue) && (channel == null || channel.ClientCount == 0))
+        if (IsNichanValue(upstreamValue) &&
+            (channel == null || channel.ClientCount == 0 || channel is NichanUpstreamChannel { IsForceReady: false }))
             return _nichanMomentum.GetForce(canonical);
         return channel?.Force ?? 0;
     }
